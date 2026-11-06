@@ -20,7 +20,7 @@ Candidates:
 
 To be decided by benchmark, not opinion.
 
-Benchmark: 500 concurrent clients, 50 seats, each requesting 2 adjacent seats.
+Benchmark: 500 concurrent clients, each a different user, 50 seats, each requesting 2 adjacent seats. Different users matter because the one-open-hold index (ADR 001) would otherwise reject requests before they compete for seats, which would distort the results.
 
 Results (fill in after running):
 

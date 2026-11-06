@@ -1,6 +1,6 @@
 # Rushline: design doc
 
-Status: draft v1 · Author: Chinmai S D · Last updated: 2026-11-04
+Status: draft v2 · Author: Chinmai S D · Last updated: 2026-11-06
 
 ## Context
 
@@ -68,60 +68,101 @@ Load tests will run at whatever scale the AWS budget allows. Reported numbers wi
 
 ```mermaid
 flowchart TD
-    C[Chat page] --> ALB[Load balancer]
-    H[MCP hosts] --> MCP[MCP server] --> ALB
+    C[Chat page] -- user token --> ALB[Load balancer]
+    H[MCP hosts] --> MCP[MCP server]
+    MCP -- per-user token, no payment --> ALB
     ALB --> API[API service, stateless, N copies]
     API --> PG[(Postgres: source of truth)]
-    API --> R[(Redis: cache, rate limits, pub/sub)]
-    API --> Q[[SQS: agent run jobs]]
+    API --> R[(Redis: cache, rate limits, agent event streams)]
     API --> PAY[Mock payment service]
+    X[Background worker: hold expiry, reconciliation, capture retries, outbox] --> PG
+    X --> PAY
+    X -- publish outbox jobs --> Q[[SQS + DLQ: agent run jobs]]
     Q --> W[Agent worker + LLM gateway]
-    W -- tool calls over REST --> ALB
+    W -- tool calls over REST, agent token --> ALB
     W --> LLM[LLM providers]
     W -- stream events --> R
-    X[Background worker: hold expiry, reconciliation, outbox] --> PG
-    X --> PAY
+    W -- checkpoints --> AS[(Agent state schema: no booking access)]
+    API -.-> OT[OpenTelemetry: traces, metrics, logs]
+    W -.-> OT
+    X -.-> OT
 ```
+
+Editable version: [Eraser diagram](https://app.eraser.io/workspace/htfv8TE8hwly0ObFbIeZ), open only to members of its Eraser workspace.
 
 Why each box exists:
 
 | Box | Justification |
 |---|---|
 | Postgres | Bookings need transactions and row-level locking. Also holds policy chunks with pgvector, so RAG needs no extra database. |
-| Redis | Seat-map reads are thousands of times more frequent than writes and must return in < 200 ms. Also rate limits and pub/sub for streaming. |
+| Redis | Seat-map reads are thousands of times more frequent than writes and must return in < 200 ms. Also rate limits and Redis Streams for agent events, so a reconnecting page can catch up. |
 | Load balancer + N API copies | The API keeps no state in memory, so copies can be added during a spike and one crash doesn't take the system down. |
 | SQS + agent worker | Agent turns take 10 to 30 s and must not tie up web workers. SQS gives retries and a dead-letter queue. |
-| Background worker | Frees expired holds, reconciles unknown payment states, and publishes outbox events, without slowing user requests. |
+| Agent state schema | Stores LangGraph checkpoints, so a run can stop while it waits for approval. It uses its own database role with no access to booking tables. |
+| Background worker | Frees expired holds, reconciles unknown payment states, retries captures, and publishes outbox events to SQS, without slowing user requests. Shares booking code with the API and has its own database role. |
 | Mock payment | Lets us inject latency, failures and timeouts on demand to prove the payment flow is safe. |
-| MCP server | Exposes booking tools to any MCP host. A thin wrapper over the REST API, so every rule still applies. |
+| MCP server | Exposes browse and hold tools to any MCP host. A thin wrapper over the REST API, so every rule still applies. |
 
 Rules:
-- The agent and MCP server call the REST API, never the database. Business rules live in the backend, never in prompts.
+- The agent and MCP server call the REST API, never booking tables. Business rules live in the backend, never in prompts.
+- The API never sends to SQS directly. It writes an outbox row in the same transaction as the run, and the background worker publishes it.
+- The background worker is trusted backend code, so it uses the database directly. It imports the same booking modules as the API, so the rules exist in one place. The REST-only rule is for untrusted clients: the agent and MCP server.
+- Redis never decides whether a seat is available. Holds and bookings always check Postgres inside their transaction.
+- Tracing is added in phase 3, but request IDs and structured logs start in v0, so a request can be followed from the beginning.
 - The LLM gateway is a module inside the worker, not a separate service, until a second consumer needs it.
+
+Payment responsibilities:
+
+| Component | Responsibility |
+|---|---|
+| API | Authorize, capture and void as part of the booking request |
+| Background worker | Look up unknown payment results, retry captures, void abandoned authorizations |
+| Payment provider | Runs the payment and reports its status |
+| Agent worker | Asks to pay through the API, and never sees the payment token |
+
+A timeout never means a payment failed. The payment may have succeeded and only the response was lost, so the result is looked up by key.
+
+Database access:
+
+| Component | Booking tables | Agent state |
+|---|---|---|
+| API | Read and write | None |
+| Background worker | Limited role: holds, seats, bookings, outbox | None |
+| Agent worker | None, uses the REST API | Read and write |
+| MCP server | None, uses the REST API | None |
 
 ### API
 
+Token checks live in one shared FastAPI dependency. Each route declares which actors it allows.
+
 ```
-Auth: JWT bearer token (seeded demo users)
+Auth: JWT bearer token (seeded demo users) with an actor claim:
+  user   full access to the user's own data
+  agent  short-lived, tied to one run_id, needs an approval to pay
+  mcp    per user, can browse and manage holds, can't pay, cancel or decide approvals
 
 GET    /shows?cursor=&limit=                    cursor pagination
 GET    /shows/{id}/seats                        cached ~1 s
+GET    /policies/search?venue_id=&q=            chunks with citations
 
 POST   /holds      {show_id, seat_ids}          Idempotency-Key required
        201 {hold_id, expires_at} | 409 seat unavailable | 422 too many seats | 429 limit
 DELETE /holds/{id}                              204
 
-POST   /bookings   {hold_id, payment_token}     Idempotency-Key required
-       201 {booking_id} | 410 hold expired | 402 payment failed
-DELETE /bookings/{id}                           204 (soft cancel)
+POST   /bookings   user:  {hold_id, payment_token}
+                   agent: {hold_id, approval_id}   Idempotency-Key required
+       201 {booking_id, status} | 410 hold expired | 402 payment failed
+       403 agent without a valid approval, or mcp token
+DELETE /bookings/{id}                           204 (soft cancel) | 409 while pending_capture
 
 POST   /conversations                           201 {conversation_id}
 POST   /conversations/{id}/messages {text}      202 {run_id}
-GET    /runs/{id}/stream                        SSE
-POST   /runs/{id}/approvals/{aid} {decision}    resumes the run
+GET    /runs/{id}/stream                        SSE, Last-Event-ID replays missed events
+POST   /runs/{id}/approvals/{aid} {decision, payment_token}
+                                                user token only, resumes the run
 ```
 
-GETs and DELETEs are safe to retry by nature. POSTs are safe to retry only because of the Idempotency-Key.
+GETs and DELETEs are safe to retry by nature. POSTs are safe to retry only because of the Idempotency-Key. Agent tools build the key from `run_id` and the step number, so a redelivered SQS message repeats the same request instead of making a new one.
 
 ### Data model
 
@@ -131,18 +172,24 @@ seats            id, show_id, seat_no, price_paise, status, hold_id, version
                  UNIQUE (show_id, seat_no), INDEX (show_id, status)
 holds            id, user_id, show_id, status, expires_at, payment_deadline
                  partial INDEX (expires_at) WHERE status IN ('active', 'paying')
+                 partial UNIQUE (user_id, show_id) WHERE status IN ('active', 'paying')
 bookings         id, user_id, hold_id UNIQUE, amount_paise, status, payment_ref
+                 partial INDEX (id) WHERE status = 'pending_capture'
 idempotency_keys (user_id, key) PK, request_hash, response_status, response_body
 outbox           id, event_type, payload, created_at, published_at
 
 conversations    id, user_id, created_at
 agent_runs       id, conversation_id, status, tokens_in, tokens_out, cost_usd
-approvals        id, run_id, action, status, expires_at
+approvals        id, run_id, hold_id, amount_paise, status, expires_at, used_at, payment_token
 policy_chunks    id, venue_id, text, embedding (pgvector), tsv (full-text)
+
+Separate schema and role, no booking access:
+agent state      LangGraph checkpoints
 ```
 
 - Money is stored as integer paise, never floats.
 - `bookings.hold_id UNIQUE` is a database-level guarantee that one hold produces at most one booking.
+- The partial unique index on `holds` is a database-level guarantee of one open hold per user per show, even when two requests arrive together. A converted, expired or released hold no longer counts.
 - Seat `status` is stored on the row so a single conditional UPDATE can claim it.
 
 ### Hold lifecycle
@@ -156,6 +203,16 @@ active ──> paying ──> converted
 
 The expiry worker only touches `active` holds. A hold in `paying` is protected until its payment deadline.
 
+### Booking lifecycle
+
+```
+pending_capture ──> confirmed ──> cancelled
+       │
+       └──> capture_failed   (retries exhausted, raises an alert)
+```
+
+A booking is created as `pending_capture` and only becomes `confirmed` after capture succeeds. This way, a crash between saving and capturing leaves a row the worker can find.
+
 ## Deep dives
 
 ### 1. Concurrency on holds
@@ -167,7 +224,7 @@ A naive read-then-write lets two users hold the same seat under READ COMMITTED. 
 3. Atomic conditional update: `UPDATE ... WHERE id = ANY(:ids) AND status = 'available' RETURNING id`, all or nothing.
 4. Optional: naive code under SERIALIZABLE isolation with retries.
 
-Benchmark: 500 concurrent clients, 50 seats, 2 adjacent seats per request. Measured: double holds (must be 0), successful holds/s, p50/p99 latency, 409 rate, retries, deadlocks. The winner is recorded in ADR 002.
+Benchmark: 500 concurrent clients, each a different user, 50 seats, 2 adjacent seats per request. Different users matter because the one-open-hold index would otherwise reject requests before they compete for seats. Measured: double holds (must be 0), successful holds/s, p50/p99 latency, 409 rate, retries, deadlocks. The winner is recorded in ADR 002.
 
 ### 2. Payment vs hold expiry
 
@@ -177,16 +234,31 @@ Recovery for the cases prevention can't cover (provider timeouts leave the resul
 
 1. Flip hold to `paying`.
 2. Authorize with the provider, passing our idempotency key.
-3. One transaction: create booking, mark seats `booked`, hold `converted`.
-4. Capture. If step 3 failed, void instead.
+3. One transaction: create booking as `pending_capture`, mark seats `booked`, hold `converted`.
+4. Capture, then mark the booking `confirmed`. If step 3 failed, void instead.
 5. If authorize timed out, the reconciliation worker looks the payment up by key and either completes the booking or voids it. Holds in `paying` past their deadline are always resolved this way.
+6. If capture didn't finish, the worker retries it with the same key for any booking stuck in `pending_capture`. If retries run out, the booking becomes `capture_failed` and raises an alert.
 
 ### 3. Agent safety
 
-- Tools go through the REST API with the user's own token, so the agent can only act as that user.
+Full reasoning in ADR 004.
+
+- The agent uses a short-lived token with `actor=agent` and its `run_id`, so it can only act as that user and the API can tell it apart from the user.
 - Hold limits, rate limits and idempotency are enforced by the backend.
-- Payment requires an approved `approvals` row, checked server-side.
+- Agent payments need an approval tied to one hold and amount, single use, expiring no later than the hold.
+- Only a `user` token can decide an approval. Agent and MCP tokens are rejected, so the agent can't approve itself.
+- The user gives the payment token to the API at approval time. It's cleared once used or expired, and is never returned by an API or sent to the agent or LLM.
+- MCP hosts get a per-user token that can browse and manage holds. Payment happens only in the chat page or direct API.
 - Retrieved policy text is treated as data, never instructions. A red-team suite tests injection attempts.
+
+### 4. Background work and agent runs
+
+- **Queuing a run:** the API saves the run and an outbox row in one transaction, and the worker publishes it to SQS. A crash can't leave a saved run that never gets queued. Resuming after approval works the same way. This adds a polling delay, which we'll measure against the first token target.
+- **Waiting for approval:** the run saves a checkpoint and stops, so no worker sits idle.
+- **Duplicates:** SQS can deliver a message twice. Checkpoints and idempotency keys make a repeat safe.
+- **Long runs and crashes:** the worker keeps extending the SQS visibility timeout during a run, so a job isn't redelivered while it's still running. If the worker crashes, the timeout lapses and SQS retries it. After repeated failures, the job goes to the DLQ, and a documented redrive process puts it back once fixed.
+- **Several worker copies:** workers claim rows with `FOR UPDATE SKIP LOCKED`, so two copies don't process the same hold or booking.
+- **Reconnecting:** agent events go to Redis Streams with an ID, so the page can replay what it missed.
 
 ## Alternatives considered
 
@@ -197,25 +269,39 @@ Recovery for the cases prevention can't cover (provider timeouts leave the resul
 | Kafka for events | Write volume is a few hundred/s at peak. SQS plus an outbox table is enough. |
 | WebSockets for streaming | Communication is one-way. SSE is plain HTTP and works through the ALB with no extra setup. |
 | LLM gateway as its own service | Only one consumer today. Adds a network hop and a deployment for no benefit yet. |
+| Capture before saving the booking | If the save then fails, money has moved for a seat the user didn't get, and a refund is needed. See ADR 003. |
+| Payment webhook | Webhooks can be lost, so the lookup is still needed. Adds a public endpoint for a mock provider. Worth adding only with a real provider. |
+| Agent uses the user's own token | The API couldn't tell agent from user, so it couldn't require approval only for the agent. See ADR 004. |
+| Shared MCP service account | The API couldn't tell whose booking it was touching. |
+| Redis pub/sub for agent events | Events are lost if the browser is disconnected when they're sent. |
+| Worker calls an internal API for booking changes | `SKIP LOCKED` row locks wouldn't cover work done over HTTP, cleanup would depend on the API during a rush, and it adds endpoints with no new guarantee. Shared code and a limited role solve the actual risk. |
+| API publishes directly to SQS | A crash between the database commit and the send loses the job. The outbox avoids that, and the background worker is its publisher. |
+| Invalidate the seat map cache on every write | Staleness of about 1 s is accepted, since holds check Postgres. Clearing a hot key on every write could cause a stampede in a rush. To be measured in v3. |
 
 ## Risks
 
 | Failure | What happens |
 |---|---|
 | Postgres down | Holds and bookings fail with 503. Seat maps serve stale cache briefly. No data loss (RDS backups). |
-| Redis down | Seat maps fall back to Postgres (slower). Rate limits fail open with a stricter per-instance limit. |
+| Redis down | Seat maps fall back to Postgres (slower). Rate limits fail open with a stricter per-instance limit. Live agent events stop until it returns. |
 | Payment provider slow | Timeouts bound the wait. Holds stay `paying` and reconciliation resolves them. |
+| Crash before capture | Booking stays `pending_capture` and the worker retries. If the authorization has expired, it becomes `capture_failed` and raises an alert. |
 | LLM provider down | Gateway falls back to a second model. If all fail, the run fails cleanly and the user is told. |
-| Prompt injection | Agent can't exceed the user's own permissions, and payment still needs human approval. |
+| Prompt injection | Agent can't exceed the user's own permissions, and it can't pay or approve its own payment without the user. |
 | Cost overrun | AWS budget alarm, no NAT gateway, `terraform destroy` when idle, per-user token budgets. |
+
+## Open questions
+
+- How does the agent worker get its short-lived token? Putting a bearer token in an SQS message is a risk to avoid.
+- How does the worker report token usage to `agent_runs`, given it has no access to those tables?
 
 ## Rollout and how we'll know it works
 
 | Milestone | Proof |
 |---|---|
 | Backend core | Race reproduced, then 0 double holds across all strategies; benchmark table published |
-| Reliability | Payment timeout injection at 10%: 0 lost payments, 0 double charges after reconciliation |
+| Reliability | Payment timeout injection at 10%: 0 lost payments, 0 double charges after reconciliation. Crash injected between booking save and capture: booking still ends `confirmed` |
 | Scale | Load test report: p99 latency and throughput at a stated request rate |
-| Agent | Scenario eval pass rate in CI; red-team suite with 0 unsafe actions |
+| Agent | Scenario eval pass rate in CI; red-team suite with 0 unsafe actions; agent and MCP tokens rejected when paying without approval or deciding approvals |
 | Cloud | `terraform apply` from scratch to working system; deploys via GitHub Actions with OIDC |
 | Ops | Traces from agent to API to DB; SLO dashboard; one written postmortem |

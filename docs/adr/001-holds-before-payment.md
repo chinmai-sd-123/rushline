@@ -27,4 +27,5 @@ The agent may create holds without asking the user, because holds are cheap and 
 - Matches how users already expect ticketing to work.
 - Fits the agent flow: it can hold seats, then ask for approval while the seats are safe.
 - We need an expiry worker and must handle the race between expiry and payment (see ADR 003).
-- Holds can be abused to hoard seats. Mitigated by backend limits: max 6 seats per hold, one active hold per user per show, rate limits.
+- Holds can be abused to hoard seats. Mitigated by backend limits: max 6 seats per hold, one open hold per user per show (a partial unique index on `holds`, counting `active` and `paying`), rate limits.
+- To change seats, a user must release their hold first, and may lose those seats to someone else in that moment. An "add to hold" flow could come later.
