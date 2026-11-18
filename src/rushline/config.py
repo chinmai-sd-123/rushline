@@ -13,3 +13,6 @@ class Settings(BaseSettings):
     redis_url: str
     hold_ttl_seconds: int = Field(default=600, gt=0)
     max_seats_per_hold: int = Field(default=6, gt=0)
+    db_pool_size: int = Field(default=10, gt=0)
+    db_max_overflow: int = Field(default=5, ge=0)
+    db_pool_timeout_seconds: float = Field(default=5, gt=0)
