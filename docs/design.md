@@ -170,13 +170,17 @@ GETs and DELETEs are safe to retry by nature. POSTs are safe to retry only becau
 users, venues, shows
 seats            id, show_id, seat_no, price_paise, status, hold_id, version
                  UNIQUE (show_id, seat_no), INDEX (show_id, status)
+                 partial INDEX (hold_id) WHERE hold_id IS NOT NULL
+                 CHECK: status = 'available' exactly when hold_id IS NULL
 holds            id, user_id, show_id, status, expires_at, payment_deadline
                  partial INDEX (expires_at) WHERE status IN ('active', 'paying')
                  partial UNIQUE (user_id, show_id) WHERE status IN ('active', 'paying')
-bookings         id, user_id, hold_id UNIQUE, amount_paise, status, payment_ref
-                 partial INDEX (id) WHERE status = 'pending_capture'
-idempotency_keys (user_id, key) PK, request_hash, response_status, response_body
+bookings         id, user_id, hold_id UNIQUE, amount_paise, status, payment_ref, created_at
+                 partial INDEX (created_at) WHERE status = 'pending_capture'
+idempotency_keys (user_id, key) PK, request_hash, response_status, response_body, created_at
+                 response NULL means the request is still in progress
 outbox           id, event_type, payload, created_at, published_at
+                 partial INDEX (id) WHERE published_at IS NULL
 
 conversations    id, user_id, created_at
 agent_runs       id, conversation_id, status, tokens_in, tokens_out, cost_usd
