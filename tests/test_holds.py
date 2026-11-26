@@ -1,7 +1,9 @@
+import uuid
 from datetime import UTC, datetime, timedelta
 
 
-def hold(client, headers, seat_ids, show_id=1):
+def hold(client, headers, seat_ids, show_id=1, key=None):
+    headers = {**headers, "Idempotency-Key": key or uuid.uuid4().hex}
     return client.post("/holds", json={"show_id": show_id, "seat_ids": seat_ids}, headers=headers)
 
 
@@ -23,7 +25,10 @@ def test_hold_claims_seats_for_ten_minutes(client, auth):
 
 
 def test_hold_needs_a_token(client):
-    assert client.post("/holds", json={"show_id": 1, "seat_ids": [1]}).status_code == 401
+    response = client.post(
+        "/holds", json={"show_id": 1, "seat_ids": [1]}, headers={"Idempotency-Key": "k"}
+    )
+    assert response.status_code == 401
 
 
 def test_hold_rejects_more_than_six_seats(client, auth):
