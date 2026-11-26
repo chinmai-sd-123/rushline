@@ -57,7 +57,8 @@ def _next_fault(op: Op) -> Fault | None:
         return queued[op].popleft()
     roll = random.random()
     if roll < TIMEOUT_RATE:
-        return "timeout_after"  # the nasty one: it happened, but the caller can't know
+        # Both unknowns: never happened, or happened but the caller can't know.
+        return random.choice(["timeout_before", "timeout_after"])
     if op == "authorize" and roll < TIMEOUT_RATE + DECLINE_RATE:
         return "decline"
     return None
