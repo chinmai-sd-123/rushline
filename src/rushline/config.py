@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,3 +21,4 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(min_length=32)  # HS256 key: at least 256 bits
     jwt_ttl_seconds: int = Field(default=3600, gt=0)
     enable_dev_login: bool = False  # only for local demos
+    hold_strategy: Literal["naive"] = "naive"  # how seats get claimed (ADR 002)

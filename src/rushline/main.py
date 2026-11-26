@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from redis.asyncio import Redis
 
-from rushline import auth, health, shows
+from rushline import auth, health, holds, shows
 from rushline.config import Settings
 from rushline.db import create_engine
 
@@ -22,5 +22,5 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Rushline", lifespan=lifespan)
-for module in (health, auth, shows):
+for module in (health, auth, shows, holds):
     app.include_router(module.router)
