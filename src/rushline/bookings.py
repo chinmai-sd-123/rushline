@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -23,6 +23,7 @@ from rushline.config import Settings
 from rushline.deps import get_conn, get_settings
 from rushline.payments import Payment, PaymentClient, PaymentDeclined, PaymentUnknown
 from rushline.ratelimit import rate_limit
+from rushline.runs import use_approval
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/bookings")
@@ -129,8 +130,17 @@ async def release_paying_hold(conn: AsyncConnection, hold_id: int) -> bool:
 
 
 class BookingIn(BaseModel):
+    """Users pay with a payment token. Agents pay only with an approval (ADR 004)."""
+
     hold_id: int
-    payment_token: str = Field(min_length=1, max_length=200)
+    payment_token: str | None = Field(default=None, min_length=1, max_length=200)
+    approval_id: int | None = None
+
+    @model_validator(mode="after")
+    def one_way_to_pay(self) -> "BookingIn":
+        if (self.payment_token is None) == (self.approval_id is None):
+            raise ValueError("send exactly one of payment_token or approval_id")
+        return self
 
 
 class BookingOut(BaseModel):
@@ -149,16 +159,27 @@ class BookingSummary(BaseModel):
 
 
 async def _start_payment(
-    conn: AsyncConnection, settings: Settings, user_id: int, hold_id: int
-) -> int:
-    """Step 1. Returns the amount to charge."""
-    params = {"hold_id": hold_id, "user_id": user_id}
+    conn: AsyncConnection, settings: Settings, principal: Principal, body: BookingIn
+) -> tuple[int, str]:
+    """Step 1. Returns (amount, payment token). An agent's approval is used up here, in
+    the same transaction that flips the hold, so a failed flip leaves it unused."""
+    params = {"hold_id": body.hold_id, "user_id": principal.user_id}
     async with conn.begin():
+        token = body.payment_token
+        approved_amount = None
+        if principal.actor == "agent":
+            approval = await use_approval(conn, principal, body.approval_id, body.hold_id)
+            if approval is None:
+                raise HTTPException(403, "no valid approval for this hold")
+            token, approved_amount = approval
         started = await conn.scalar(
             START_PAYMENT, {**params, "window": settings.payment_window_seconds}
         )
         if started is not None:
-            return await conn.scalar(HOLD_AMOUNT, params)
+            amount = await conn.scalar(HOLD_AMOUNT, params)
+            if approved_amount is not None and amount != approved_amount:
+                raise HTTPException(409, "hold amount differs from the approved amount")
+            return amount, token
         hold = (await conn.execute(HOLD_STATE, params)).one_or_none()
     if hold is None:
         raise HTTPException(404, "hold not found")
@@ -171,14 +192,14 @@ async def book(
     conn: AsyncConnection,
     payments: PaymentClient,
     settings: Settings,
-    user_id: int,
+    principal: Principal,
     body: BookingIn,
     key: idempotency.Key,
 ) -> tuple[int, BookingOut]:
-    amount = await _start_payment(conn, settings, user_id, body.hold_id)
+    amount, token = await _start_payment(conn, settings, principal, body)
 
     try:
-        payment = await payments.authorize(payment_key(body.hold_id), amount, body.payment_token)
+        payment = await payments.authorize(payment_key(body.hold_id), amount, token)
     except PaymentDeclined as exc:
         async with conn.begin():
             await release_paying_hold(conn, body.hold_id)
@@ -236,19 +257,19 @@ async def post_booking(
     request: Request,
     response: Response,
     idempotency_key: Annotated[str, Header(min_length=1, max_length=255)],
-    # Agents need an approval to pay (ADR 004), which arrives with the agent; until then users only.
-    principal: Annotated[Principal, Depends(require_actor("user"))],
+    # Users pay with a token; agents only with a user's approval (ADR 004); MCP never.
+    principal: Annotated[Principal, Depends(require_actor("user", "agent"))],
     settings: Annotated[Settings, Depends(get_settings)],
     conn: Annotated[AsyncConnection, Depends(get_conn)],
 ):
+    if (principal.actor == "agent") != (body.approval_id is not None):
+        raise HTTPException(403, "users pay with a payment token, agents with an approval")
     key = idempotency.Key(principal.user_id, idempotency_key)
     replay = await idempotency.claim(conn, key, idempotency.request_hash("POST /bookings", body))
     if replay is not None:
         return replay
     try:
-        code, out = await book(
-            conn, request.app.state.payments, settings, principal.user_id, body, key
-        )
+        code, out = await book(conn, request.app.state.payments, settings, principal, body, key)
     except HTTPException as exc:
         await idempotency.store_outside(conn, key, exc.status_code, {"detail": exc.detail})
         raise

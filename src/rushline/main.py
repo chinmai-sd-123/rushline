@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from redis.asyncio import BlockingConnectionPool, Redis
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 
-from rushline import auth, bookings, health, holds, shows
+from rushline import auth, bookings, health, holds, runs, shows
 from rushline.cache import SeatMapCache
 from rushline.config import Settings
 from rushline.db import create_engine
@@ -73,5 +73,5 @@ async def database_down(request: Request, exc: OSError) -> JSONResponse:
     )
 
 
-for module in (health, auth, shows, holds, bookings):
+for module in (health, auth, shows, holds, bookings, runs):
     app.include_router(module.router)
