@@ -7,6 +7,7 @@ which is the worst interleaving the naive strategy allows.
 
 import asyncio
 import os
+import uuid
 
 import httpx2
 import pytest
@@ -37,24 +38,44 @@ async def race(auth, user_ids: list[int]) -> list[httpx2.Response]:
         async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
             return await asyncio.gather(
                 *(
-                    client.post("/holds", json={"show_id": 1, "seat_ids": SEATS}, headers=auth(u))
+                    client.post(
+                        "/holds",
+                        json={"show_id": 1, "seat_ids": SEATS},
+                        headers={**auth(u), "Idempotency-Key": uuid.uuid4().hex},
+                    )
                     for u in user_ids
                 )
             )
 
 
-@pytest.mark.anyio
-async def test_naive_holds_double_book_under_concurrency(db, auth, monkeypatch):
-    barrier = asyncio.Barrier(RACERS)
-    monkeypatch.setattr(holds, "after_naive_read", barrier.wait)
+async def add_racers() -> list[int]:
     users = await query(
         "INSERT INTO users (email, name) "
         "SELECT 'racer' || g || '@example.com', 'Racer ' || g FROM generate_series(1, :n) g "
         "RETURNING id",
         n=RACERS,
     )
+    return [u.id for u in users]
 
-    responses = await race(auth, [u.id for u in users])
+
+def once_per_request(barrier: asyncio.Barrier):
+    """Pause each request once; retries (serializable) must not wait again."""
+    seen: set[asyncio.Task] = set()
+
+    async def wait() -> None:
+        task = asyncio.current_task()
+        if task not in seen:
+            seen.add(task)
+            await barrier.wait()
+
+    return wait
+
+
+@pytest.mark.anyio
+async def test_naive_holds_double_book_under_concurrency(db, auth, monkeypatch):
+    monkeypatch.setattr(holds, "after_naive_read", asyncio.Barrier(RACERS).wait)
+
+    responses = await race(auth, await add_racers())
 
     winners = [r for r in responses if r.status_code == 201]
     # The bug: every racer saw "available", so every one was told they hold the seats...
@@ -65,3 +86,23 @@ async def test_naive_holds_double_book_under_concurrency(db, auth, monkeypatch):
     )
     [(active,)] = await query("SELECT count(*) FROM holds WHERE status = 'active'")
     assert active == len(winners) > owners
+
+
+SAFE = ["pessimistic", "pessimistic_nowait", "optimistic", "atomic", "serializable"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("strategy", SAFE)
+async def test_safe_strategies_give_the_seats_to_exactly_one_racer(db, auth, monkeypatch, strategy):
+    monkeypatch.setenv("RUSHLINE_HOLD_STRATEGY", strategy)
+    # Everyone reaches the claim at the same moment: maximum contention.
+    monkeypatch.setattr(holds, "before_claim", once_per_request(asyncio.Barrier(RACERS)))
+
+    responses = await race(auth, await add_racers())
+
+    assert sorted(r.status_code for r in responses) == [201] + [409] * (RACERS - 1)
+    [(owners,)] = await query(
+        "SELECT count(DISTINCT hold_id) FROM seats WHERE id = ANY(:ids)", ids=SEATS
+    )
+    [(active,)] = await query("SELECT count(*) FROM holds WHERE status = 'active'")
+    assert owners == active == 1  # losers' holds were rolled back
