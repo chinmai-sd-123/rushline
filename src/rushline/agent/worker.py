@@ -84,7 +84,10 @@ async def handle(
             settings.conversation_token_budget,
             checkpointer,
         )
-        config = {"configurable": {"thread_id": f"conversation-{run['conversation_id']}"}}
+        # The user id is part of the thread id: memory can never cross users, even if a
+        # conversation id were reused (e.g. after a dev database reset).
+        thread_id = f"user-{user_id}-conversation-{run['conversation_id']}"
+        config = {"configurable": {"thread_id": thread_id}}
         before = (await graph.aget_state(config)).values
         if job.type == "run.queued":
             graph_input: Any = {"messages": [{"role": "user", "content": run["input"]}], "steps": 0}

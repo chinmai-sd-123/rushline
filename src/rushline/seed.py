@@ -55,6 +55,16 @@ async def clear_all(conn: AsyncConnection) -> None:
         await conn.execute(text(f"DELETE FROM {table}"))  # fixed names, no user input
     for table in ID_TABLES:
         await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN id RESTART"))
+    # Agent memory (LangGraph checkpoints) is keyed by conversation id. Ids restart above,
+    # so old threads must go too, or a new conversation would inherit an old one's history.
+    checkpoint_tables = await conn.scalars(
+        text(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'agent' "
+            "AND tablename LIKE 'checkpoint%' AND tablename <> 'checkpoint_migrations'"
+        )
+    )
+    for table in list(checkpoint_tables):
+        await conn.execute(text(f'DELETE FROM agent."{table}"'))
 
 
 async def load_demo_data(conn: AsyncConnection) -> None:
