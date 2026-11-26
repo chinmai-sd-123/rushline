@@ -1,6 +1,6 @@
 # Rushline: design doc
 
-Status: draft v2 · Author: Chinmai S D · Last updated: 2026-11-06
+Status: draft v2 · Author: Chinmai S D · Last updated: 2026-11-26
 
 ## Context
 
@@ -141,13 +141,21 @@ Auth: JWT bearer token (seeded demo users) with an actor claim:
   agent  short-lived, tied to one run_id, needs an approval to pay
   mcp    per user, can browse and manage holds, can't pay, cancel or decide approvals
 
-GET    /shows?cursor=&limit=                    cursor pagination
-GET    /shows/{id}/seats                        cached ~1 s
+POST   /auth/dev-token {email}                  local demos only (RUSHLINE_ENABLE_DEV_LOGIN)
+GET    /auth/me                                 who the token belongs to, and the actor
+
+GET    /health                                  liveness, no dependencies
+GET    /ready                                   503 if Postgres is down, 200 "degraded" if only Redis is
+
+GET    /shows?cursor=&limit=                    cursor pagination on (starts_at, id), limit 1 to 100
+GET    /shows/{id}/seats                        cached ~1 s | 404 unknown show
 GET    /policies/search?venue_id=&q=            chunks with citations
 
 POST   /holds      {show_id, seat_ids}          Idempotency-Key required
-       201 {hold_id, expires_at} | 409 seat unavailable | 422 too many seats | 429 limit
-DELETE /holds/{id}                              204
+       201 {hold_id, show_id, seat_ids, expires_at}
+       409 seat unavailable, or an open hold already exists for this show
+       422 too many, duplicate or unknown seats | 429 limit
+DELETE /holds/{id}                              204 | 404 not yours or unknown | 409 not active
 
 POST   /bookings   user:  {hold_id, payment_token}
                    agent: {hold_id, approval_id}   Idempotency-Key required
@@ -227,6 +235,8 @@ A naive read-then-write lets two users hold the same seat under READ COMMITTED. 
 2. Optimistic: `version` column, `UPDATE ... WHERE version = :v`, retry on zero rows.
 3. Atomic conditional update: `UPDATE ... WHERE id = ANY(:ids) AND status = 'available' RETURNING id`, all or nothing.
 4. Optional: naive code under SERIALIZABLE isolation with retries.
+
+Reproduced in v0 (`tests/test_race.py`): 20 different users request the same 2 seats at once with the naive strategy. Over 20 runs on the dev machine, 3 to 11 of them got a 201 per run (median 7), while each seat row can point at only one hold.
 
 Benchmark: 500 concurrent clients, each a different user, 50 seats, 2 adjacent seats per request. Different users matter because the one-open-hold index would otherwise reject requests before they compete for seats. Measured: double holds (must be 0), successful holds/s, p50/p99 latency, 409 rate, retries, deadlocks. The winner is recorded in ADR 002.
 
