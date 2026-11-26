@@ -8,6 +8,8 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from rushline.queue import JobQueue
+
 STREAM = "rushline:events"
 STREAM_MAX_LEN = 10_000  # approximate cap so the stream can't grow forever
 
@@ -20,12 +22,17 @@ async def add(conn: AsyncConnection, event_type: str, payload: dict) -> None:
 
 
 class RedisStreamPublisher:
-    """Local stand-in for SQS: one Redis stream entry per event."""
+    """Local stand-in for SQS. Agent run events (run.*) go to the job queue the agent
+    workers consume. Everything else goes to the events stream."""
 
     def __init__(self, redis: Redis):
         self.redis = redis
+        self.jobs = JobQueue(redis)
 
     async def publish(self, event_id: int, event_type: str, payload: dict) -> None:
+        if event_type.startswith("run."):
+            await self.jobs.put(event_id, event_type, payload)
+            return
         await self.redis.xadd(
             STREAM,
             {"id": event_id, "type": event_type, "payload": json.dumps(payload)},

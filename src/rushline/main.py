@@ -34,6 +34,8 @@ async def lifespan(app: FastAPI):
             socket_connect_timeout=0.5,
         )
     )
+    # Live run streams block on Redis for up to 15s: their own client, never the shared pool.
+    app.state.redis_streams = Redis.from_url(settings.redis_url, socket_timeout=30)
     app.state.seat_maps = SeatMapCache(
         app.state.redis, settings.seat_map_fresh_seconds, settings.seat_map_stale_seconds
     )
@@ -42,6 +44,7 @@ async def lifespan(app: FastAPI):
     yield
     await app.state.seat_maps.aclose()
     await app.state.payments.aclose()
+    await app.state.redis_streams.aclose()
     await app.state.redis.aclose()
     await app.state.engine.dispose()
 

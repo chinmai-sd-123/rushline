@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     llm_models: list[str] = ["gpt-5-mini", "gpt-4.1-mini"]  # cheapest first, then fallbacks
     llm_timeout_seconds: float = Field(default=30, gt=0)
     llm_daily_tokens_per_user: int = Field(default=200_000, gt=0)
-    run_token_budget: int = Field(default=20_000, gt=0)  # hard cap per agent run
-    run_max_steps: int = Field(default=12, gt=0)
+    conversation_token_budget: int = Field(default=50_000, gt=0)  # hard cap (design)
+    run_max_steps: int = Field(default=12, gt=0)  # model calls per run
+    agent_database_url: str | None = None  # LangGraph checkpoints; defaults to database_url
+    agent_job_visibility_seconds: int = Field(default=300, gt=0)  # redeliver after this
     embedding_model: str = "text-embedding-3-small"
     api_url: str = "http://localhost:8000"  # the agent and MCP server call the REST API

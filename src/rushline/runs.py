@@ -10,7 +10,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -167,6 +168,47 @@ async def update_run(
     return RunOut(**row._mapping)
 
 
+TERMINAL_EVENTS = {"run.completed", "run.failed", "approval_required"}
+
+
+@router.get("/runs/{run_id}/stream")
+async def stream_run(
+    run_id: int,
+    request: Request,
+    principal: Annotated[Principal, Depends(user_only)],
+    conn: Annotated[AsyncConnection, Depends(get_conn)],
+    last_event_id: Annotated[str | None, Header()] = None,
+) -> StreamingResponse:
+    """Server-sent events for one run. Reconnect with Last-Event-ID to replay what you missed.
+
+    The stream ends at the run's next stopping point: done, failed or waiting for approval.
+    """
+    owner = await conn.scalar(text("SELECT user_id FROM agent_runs WHERE id = :id"), {"id": run_id})
+    if owner != principal.user_id:
+        raise HTTPException(404, "run not found")
+    redis = request.app.state.redis_streams
+    key = f"run:{run_id}:events"
+
+    async def events():
+        last = last_event_id or "0-0"
+        while not await request.is_disconnected():
+            batches = await redis.xread({key: last}, block=15_000, count=100)
+            if not batches:
+                yield ": keep-alive\n\n"  # comment line: keeps proxies from closing the stream
+                continue
+            for _, entries in batches:
+                for entry_id, fields in entries:
+                    last = entry_id.decode()
+                    event_type = fields[b"type"].decode()
+                    yield f"id: {last}\nevent: {event_type}\ndata: {fields[b'data'].decode()}\n\n"
+                    if event_type in TERMINAL_EVENTS:
+                        return
+
+    return StreamingResponse(
+        events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}
+    )
+
+
 # --- Approvals ---
 
 
@@ -278,7 +320,12 @@ async def decide_approval(
             await outbox.add(
                 conn,
                 "run.resume",
-                {"run_id": run_id, "approval_id": approval_id, "decision": body.decision},
+                {
+                    "run_id": run_id,
+                    "user_id": principal.user_id,
+                    "approval_id": approval_id,
+                    "decision": body.decision,
+                },
             )
             return ApprovalOut(**row._mapping)
         current = (
