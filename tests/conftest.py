@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx2
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -19,6 +20,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from rushline import mockpay, payments
 from rushline.auth import create_token
 from rushline.config import Settings
 from rushline.main import app
@@ -30,6 +32,8 @@ ROOT = Path(__file__).resolve().parents[1]
 # Configure the app for tests before any test imports it.
 os.environ.setdefault("RUSHLINE_JWT_SECRET", "test-only-secret-that-is-at-least-32-chars")
 os.environ["RUSHLINE_ENABLE_DEV_LOGIN"] = "true"
+os.environ["RUSHLINE_PAYMENT_TIMEOUT_SECONDS"] = "0.3"  # mock faults hang for 5s
+os.environ["RUSHLINE_CAPTURE_RETRY_AFTER_SECONDS"] = "0"
 _base_url = make_url(Settings().database_url)
 TEST_DATABASE_URL = _base_url.set(database=TEST_DB).render_as_string(hide_password=False)
 os.environ["RUSHLINE_DATABASE_URL"] = TEST_DATABASE_URL
@@ -63,6 +67,18 @@ async def _load_demo_data() -> None:
     redis = Redis.from_url(TEST_REDIS_URL)
     await redis.flushdb()
     await redis.aclose()
+
+
+# Payments go to the in-process mock provider, never the network.
+payments.transport_override = httpx2.ASGITransport(app=mockpay.app)
+
+
+@pytest.fixture(autouse=True)
+def clean_mockpay() -> None:
+    mockpay.payments.clear()
+    mockpay.ids_by_key.clear()
+    for faults in mockpay.queued.values():
+        faults.clear()
 
 
 @pytest.fixture(scope="session", autouse=True)

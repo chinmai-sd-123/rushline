@@ -48,6 +48,7 @@ def configure_logging(level: str = "INFO") -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level)
+    logging.getLogger("httpx2").setLevel(logging.WARNING)  # one line per HTTP call is noise
 
 
 class RequestContextMiddleware:

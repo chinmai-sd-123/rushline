@@ -60,6 +60,13 @@ OPTIMISTIC_CLAIM = text("""
     RETURNING s.id
 """)
 HOLD_STATUS = text("SELECT status FROM holds WHERE id = :hold_id AND user_id = :user_id")
+HOLD_VIEW = text("""
+    SELECT h.id AS hold_id, h.show_id, h.status, h.expires_at,
+           coalesce(array_agg(s.id ORDER BY s.id) FILTER (WHERE s.id IS NOT NULL), '{}') AS seat_ids
+    FROM holds h LEFT JOIN seats s ON s.hold_id = h.id
+    WHERE h.id = :hold_id AND h.user_id = :user_id
+    GROUP BY h.id
+""")
 FREE_SEATS = text("""
     UPDATE seats SET status = 'available', hold_id = NULL
     WHERE hold_id = :hold_id AND status = 'held'
@@ -301,6 +308,29 @@ async def post_hold(
     except Exception:
         await idempotency.release(conn, key)  # let the client retry with the same key
         raise
+
+
+class HoldView(BaseModel):
+    hold_id: int
+    show_id: int
+    status: str
+    expires_at: datetime
+    seat_ids: list[int]
+
+
+@router.get("/{hold_id}")
+async def get_hold(
+    hold_id: int,
+    principal: Annotated[Principal, Depends(any_actor)],
+    conn: Annotated[AsyncConnection, Depends(get_conn)],
+) -> HoldView:
+    """Lets a client see how a 202 'processing' booking ended (converted or released)."""
+    row = (
+        await conn.execute(HOLD_VIEW, {"hold_id": hold_id, "user_id": principal.user_id})
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(404, "hold not found")
+    return HoldView(**row._mapping)
 
 
 @router.delete("/{hold_id}", status_code=status.HTTP_204_NO_CONTENT)

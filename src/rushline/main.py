@@ -5,10 +5,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from redis.asyncio import Redis
 
-from rushline import auth, health, holds, shows
+from rushline import auth, bookings, health, holds, shows
 from rushline.config import Settings
 from rushline.db import create_engine
 from rushline.observability import RequestContextMiddleware, configure_logging
+from rushline.payments import PaymentClient
 
 
 @asynccontextmanager
@@ -21,12 +22,14 @@ async def lifespan(app: FastAPI):
     app.state.redis = Redis.from_url(
         settings.redis_url, socket_timeout=0.5, socket_connect_timeout=0.5
     )
+    app.state.payments = PaymentClient(settings.payment_url, settings.payment_timeout_seconds)
     yield
+    await app.state.payments.aclose()
     await app.state.redis.aclose()
     await app.state.engine.dispose()
 
 
 app = FastAPI(title="Rushline", lifespan=lifespan)
 app.add_middleware(RequestContextMiddleware)
-for module in (health, auth, shows, holds):
+for module in (health, auth, shows, holds, bookings):
     app.include_router(module.router)
