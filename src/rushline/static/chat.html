@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rushline chat</title>
+<style>
+  :root { font-family: system-ui, sans-serif; color-scheme: light dark; }
+  body { max-width: 720px; margin: 0 auto; padding: 16px; }
+  #log { border: 1px solid #8884; border-radius: 8px; padding: 12px; min-height: 320px; }
+  .user { font-weight: 600; margin-top: 12px; }
+  .event { color: #888; font-size: 0.85em; }
+  .agent { margin: 6px 0 12px; white-space: pre-wrap; }
+  .approval { border: 1px solid #c80; border-radius: 8px; padding: 10px; margin: 8px 0; }
+  form { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  input { flex: 1; min-width: 0; padding: 8px; }
+  button { padding: 8px 12px; }
+</style>
+</head>
+<body>
+<h1>Rushline</h1>
+<form id="login">
+  <input id="email" value="asha@example.com" aria-label="Email">
+  <button>Log in (demo)</button>
+</form>
+<div id="log" aria-live="polite"></div>
+<form id="send" hidden>
+  <input id="text" placeholder="e.g. Book 2 seats for Tatkal Tuesday" aria-label="Message">
+  <button>Send</button>
+</form>
+<script>
+// No framework: log in, send a message, follow the run's SSE stream, decide approvals.
+// EventSource can't send an Authorization header, so the stream is read with fetch.
+let token = null, conversation = null;
+const log = document.getElementById("log");
+const api = (path, opts = {}) => fetch(path, {
+  ...opts, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, ...opts.headers },
+});
+const add = (cls, text) => {
+  const el = document.createElement("div"); el.className = cls; el.textContent = text;
+  log.append(el); el.scrollIntoView(); return el;
+};
+
+document.getElementById("login").onsubmit = async (e) => {
+  e.preventDefault();
+  const r = await fetch("/auth/dev-token", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: document.getElementById("email").value }),
+  });
+  if (!r.ok) return add("event", "Login failed (is RUSHLINE_ENABLE_DEV_LOGIN on?)");
+  token = (await r.json()).access_token;
+  conversation = (await (await api("/conversations", { method: "POST" })).json()).conversation_id;
+  document.getElementById("login").hidden = true;
+  document.getElementById("send").hidden = false;
+  add("event", "Logged in. Ask about shows, seats or venue policies.");
+};
+
+document.getElementById("send").onsubmit = async (e) => {
+  e.preventDefault();
+  const input = document.getElementById("text");
+  const text = input.value.trim(); if (!text) return;
+  input.value = ""; add("user", text);
+  const r = await api(`/conversations/${conversation}/messages`, { method: "POST", body: JSON.stringify({ text }) });
+  follow((await r.json()).run_id, null);
+};
+
+async function follow(runId, lastId) {
+  const r = await api(`/runs/${runId}/stream`, { headers: lastId ? { "Last-Event-ID": lastId } : {} });
+  const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read(); if (done) return;
+    buffer += value;
+    let cut;
+    while ((cut = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, cut); buffer = buffer.slice(cut + 2);
+      const field = (name) => (block.match(new RegExp(`^${name}: (.*)$`, "m")) || [])[1];
+      const type = field("event"); if (!type) continue;  // keep-alive comment
+      lastId = field("id");
+      const data = JSON.parse(field("data"));
+      if (type === "message" || type === "run.completed" || type === "run.failed") {
+        if (data.content || data.output) add("agent", data.content || data.output);
+      } else if (type === "approval_required") {
+        askApproval(runId, data, lastId);
+      } else {
+        add("event", `${type}${data.name ? ": " + data.name : ""}${data.status ? " → " + data.status : ""}`);
+      }
+    }
+  }
+}
+
+function askApproval(runId, approval, lastId) {
+  // The payment token goes from the user to the API: the agent never sees it (ADR 004).
+  const box = add("approval", `Pay ₹${approval.amount_paise / 100} for hold ${approval.hold_id}? `);
+  const decide = async (decision) => {
+    // tok_ok is the mock provider's always-approved demo token; a real app would collect a card here.
+    const body = decision === "approve" ? { decision, payment_token: "tok_ok" } : { decision };
+    await api(`/runs/${runId}/approvals/${approval.approval_id}`, { method: "POST", body: JSON.stringify(body) });
+    box.textContent = decision === "approve" ? "Approved." : "Rejected.";
+    follow(runId, lastId);
+  };
+  for (const d of ["approve", "reject"]) {
+    const b = document.createElement("button"); b.textContent = d; b.onclick = () => decide(d); box.append(b);
+  }
+}
+</script>
+</body>
+</html>

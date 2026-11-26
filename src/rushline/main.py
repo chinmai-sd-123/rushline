@@ -2,9 +2,10 @@
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from redis.asyncio import BlockingConnectionPool, Redis
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 
@@ -80,3 +81,11 @@ async def database_down(request: Request, exc: OSError) -> JSONResponse:
 
 for module in (health, auth, shows, holds, bookings, runs, policies):
     app.include_router(module.router)
+
+CHAT_PAGE = Path(__file__).parent / "static" / "chat.html"
+
+
+@app.get("/chat", include_in_schema=False)
+async def chat_page() -> FileResponse:
+    """The one simple chat page (design: no polished frontend)."""
+    return FileResponse(CHAT_PAGE)
