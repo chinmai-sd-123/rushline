@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from rushline.config import Settings
 from rushline.db import create_engine
+from rushline.shows import router as shows_router
 
 CHECK_TIMEOUT_SECONDS = 1.0
 
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Rushline", lifespan=lifespan)
+app.include_router(shows_router)
 
 
 @app.get("/health")
