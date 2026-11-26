@@ -112,6 +112,8 @@ async def load_seat_map(engine: AsyncEngine, show_id: int) -> dict:
 async def seat_map(show_id: int, request: Request) -> JSONResponse:
     """Cached for about a second (cache.py). Hits never touch Postgres or the pool."""
     engine = request.app.state.engine
+    if not request.app.state.settings.seat_map_cache:
+        return JSONResponse(await load_seat_map(engine, show_id), headers={"X-Cache": "off"})
     data, cache_status = await request.app.state.seat_maps.get(
         show_id, lambda: load_seat_map(engine, show_id)
     )
