@@ -8,11 +8,13 @@ from redis.asyncio import Redis
 from rushline import auth, health, holds, shows
 from rushline.config import Settings
 from rushline.db import create_engine
+from rushline.observability import RequestContextMiddleware, configure_logging
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings()
+    configure_logging(settings.log_level)
     app.state.settings = settings
     app.state.engine = create_engine(settings)  # lazy: nothing connects until first use
     app.state.redis = Redis.from_url(settings.redis_url)
@@ -22,5 +24,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Rushline", lifespan=lifespan)
+app.add_middleware(RequestContextMiddleware)
 for module in (health, auth, shows, holds):
     app.include_router(module.router)

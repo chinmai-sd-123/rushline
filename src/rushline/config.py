@@ -22,3 +22,4 @@ class Settings(BaseSettings):
     jwt_ttl_seconds: int = Field(default=3600, gt=0)
     enable_dev_login: bool = False  # only for local demos
     hold_strategy: Literal["naive"] = "naive"  # how seats get claimed (ADR 002)
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
