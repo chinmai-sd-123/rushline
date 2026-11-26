@@ -37,3 +37,24 @@ def test_list_shows_rejects_bad_cursor(client):
 
     assert response.status_code == 400
     assert response.json() == {"detail": "invalid cursor"}
+
+
+def test_seat_map_lists_all_seats_available(client):
+    body = client.get("/shows/1/seats").json()
+
+    assert body["show_id"] == 1
+    assert len(body["seats"]) == 50
+    assert body["seats"][0] == {
+        "id": 1,
+        "seat_no": "A1",
+        "price_paise": 50000,
+        "status": "available",
+    }
+    assert {s["status"] for s in body["seats"]} == {"available"}
+
+
+def test_seat_map_unknown_show_is_404(client):
+    response = client.get("/shows/999/seats")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "show not found"}

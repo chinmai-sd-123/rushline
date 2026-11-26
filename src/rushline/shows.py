@@ -1,7 +1,7 @@
 import base64
 import json
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -28,6 +28,16 @@ NEXT_PAGE = text("""
 """)
 
 
+SEAT_MAP = text("""
+    SELECT id, seat_no, price_paise, status
+    FROM seats
+    WHERE show_id = :show_id
+    ORDER BY id
+""")
+
+SHOW_EXISTS = text("SELECT 1 FROM shows WHERE id = :show_id")
+
+
 class ShowOut(BaseModel):
     id: int
     venue_id: int
@@ -38,6 +48,18 @@ class ShowOut(BaseModel):
 class ShowPage(BaseModel):
     items: list[ShowOut]
     next_cursor: str | None
+
+
+class SeatOut(BaseModel):
+    id: int
+    seat_no: str
+    price_paise: int
+    status: Literal["available", "held", "booked"]
+
+
+class SeatMap(BaseModel):
+    show_id: int
+    seats: list[SeatOut]
 
 
 def encode_cursor(starts_at: datetime, show_id: int) -> str:
@@ -73,3 +95,12 @@ async def list_shows(
     has_more = len(rows) > limit
     next_cursor = encode_cursor(items[-1].starts_at, items[-1].id) if has_more else None
     return ShowPage(items=items, next_cursor=next_cursor)
+
+
+@router.get("/shows/{show_id}/seats")
+async def seat_map(show_id: int, conn: Annotated[AsyncConnection, Depends(get_conn)]) -> SeatMap:
+    rows = (await conn.execute(SEAT_MAP, {"show_id": show_id})).mappings().all()
+    # Every show has seats, so only check existence when nothing came back.
+    if not rows and (await conn.execute(SHOW_EXISTS, {"show_id": show_id})).first() is None:
+        raise HTTPException(status_code=404, detail="show not found")
+    return SeatMap(show_id=show_id, seats=[SeatOut(**row) for row in rows])
