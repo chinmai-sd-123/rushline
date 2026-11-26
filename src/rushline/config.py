@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,3 +38,12 @@ class Settings(BaseSettings):
     worker_batch_size: int = Field(default=50, gt=0)
     capture_max_attempts: int = Field(default=5, gt=0)
     capture_retry_after_seconds: int = Field(default=10, ge=0)  # let the API capture first
+    # Agent (phase 2). Without an OpenAI key the agent and embeddings use offline fakes.
+    openai_api_key: SecretStr | None = None
+    llm_models: list[str] = ["gpt-5-mini", "gpt-4.1-mini"]  # cheapest first, then fallbacks
+    llm_timeout_seconds: float = Field(default=30, gt=0)
+    llm_daily_tokens_per_user: int = Field(default=200_000, gt=0)
+    run_token_budget: int = Field(default=20_000, gt=0)  # hard cap per agent run
+    run_max_steps: int = Field(default=12, gt=0)
+    embedding_model: str = "text-embedding-3-small"
+    api_url: str = "http://localhost:8000"  # the agent and MCP server call the REST API
