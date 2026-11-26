@@ -14,7 +14,7 @@ A seat booking backend built to stay correct under a Tatkal-style rush, plus an 
 | Correctness | A test that reproduces double booking with the naive strategy |
 | Ops | Request ids, one-line JSON logs, CI with real Postgres and Redis |
 
-**Measured so far:** with the naive strategy, 20 users requesting the same 2 seats at once got 3 to 11 successful holds per run (median 7, 20 runs). That's the bug v1 fixes and benchmarks.
+**Measured so far:** with the naive strategy, 20 users requesting the same 2 seats at once got 3 to 11 successful holds per run on the dev machine (median 7, 20 runs). Whether it happens by itself depends on timing, so the test forces the worst interleaving and every racer wins. That's the bug v1 fixes and benchmarks.
 
 ## Run it locally
 
