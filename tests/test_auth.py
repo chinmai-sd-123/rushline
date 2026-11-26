@@ -41,7 +41,12 @@ def test_agent_token_carries_run_id(client, auth):
 
 
 def test_rejects_expired_token(client, auth):
-    assert client.get("/auth/me", headers=auth(ttl_seconds=-1)).status_code == 401
+    assert client.get("/auth/me", headers=auth(ttl_seconds=-60)).status_code == 401
+
+
+def test_tolerates_small_clock_skew(client, auth):
+    # Expired 5s ago by our clock: within the 30s leeway, e.g. the issuer's clock is behind.
+    assert client.get("/auth/me", headers=auth(ttl_seconds=-5)).status_code == 200
 
 
 def test_rejects_token_signed_with_another_key(client):

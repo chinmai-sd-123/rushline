@@ -16,6 +16,7 @@ from rushline.deps import get_conn, get_settings
 
 Actor = Literal["user", "agent", "mcp"]
 ALGORITHM = "HS256"
+CLOCK_SKEW_SECONDS = 30  # tolerate small clock differences between token issuer and API
 
 router = APIRouter(prefix="/auth")
 _bearer = HTTPBearer(auto_error=False)
@@ -55,6 +56,7 @@ def decode_token(settings: Settings, token: str) -> Principal:
         settings.jwt_secret,
         algorithms=[ALGORITHM],
         options={"require": ["sub", "exp", "actor"]},
+        leeway=CLOCK_SKEW_SECONDS,
     )
     actor, run_id = claims["actor"], claims.get("run_id")
     if actor not in get_args(Actor) or (actor == "agent") != (run_id is not None):
