@@ -26,3 +26,5 @@ class Settings(BaseSettings):
         "naive", "pessimistic", "pessimistic_nowait", "optimistic", "atomic", "serializable"
     ] = "pessimistic"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    holds_per_minute: int = Field(default=20, gt=0)  # per user
+    bookings_per_minute: int = Field(default=10, gt=0)

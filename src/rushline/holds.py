@@ -20,6 +20,7 @@ from rushline import idempotency
 from rushline.auth import Principal, require_actor
 from rushline.config import Settings
 from rushline.deps import get_conn, get_settings
+from rushline.ratelimit import rate_limit
 
 router = APIRouter(prefix="/holds")
 any_actor = require_actor("user", "agent", "mcp")  # holds are cheap and expire
@@ -271,7 +272,12 @@ async def create_hold(
     raise AssertionError("unreachable")
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, response_model=HoldOut)
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    response_model=HoldOut,
+    dependencies=[Depends(rate_limit("holds"))],
+)
 async def post_hold(
     body: HoldIn,
     idempotency_key: Annotated[str, Header(min_length=1, max_length=255)],

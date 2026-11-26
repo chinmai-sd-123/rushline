@@ -17,7 +17,10 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
     app.state.settings = settings
     app.state.engine = create_engine(settings)  # lazy: nothing connects until first use
-    app.state.redis = Redis.from_url(settings.redis_url)
+    # Short timeouts: a hung Redis must not hang requests (rate limits fail open).
+    app.state.redis = Redis.from_url(
+        settings.redis_url, socket_timeout=0.5, socket_connect_timeout=0.5
+    )
     yield
     await app.state.redis.aclose()
     await app.state.engine.dispose()

@@ -7,11 +7,13 @@ Set RUSHLINE_TEST_FRESH_DB=1 to rebuild it. CI always starts from an empty serve
 import asyncio
 import os
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -31,6 +33,9 @@ os.environ["RUSHLINE_ENABLE_DEV_LOGIN"] = "true"
 _base_url = make_url(Settings().database_url)
 TEST_DATABASE_URL = _base_url.set(database=TEST_DB).render_as_string(hide_password=False)
 os.environ["RUSHLINE_DATABASE_URL"] = TEST_DATABASE_URL
+# Redis db 1 for tests, so dev data in db 0 is never touched.
+TEST_REDIS_URL = urlunsplit(urlsplit(Settings().redis_url)._replace(path="/1"))
+os.environ["RUSHLINE_REDIS_URL"] = TEST_REDIS_URL
 
 
 async def _prepare_test_database(fresh: bool) -> None:
@@ -55,6 +60,9 @@ async def _load_demo_data() -> None:
     async with engine.begin() as conn:
         await load_demo_data(conn)
     await engine.dispose()
+    redis = Redis.from_url(TEST_REDIS_URL)
+    await redis.flushdb()
+    await redis.aclose()
 
 
 @pytest.fixture(scope="session", autouse=True)
