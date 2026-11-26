@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(min_length=32)  # HS256 key: at least 256 bits
     jwt_ttl_seconds: int = Field(default=3600, gt=0)
     enable_dev_login: bool = False  # only for local demos
-    # How seats get claimed (ADR 002). "naive" is unsafe and kept as the baseline.
+    # How seats get claimed. Chosen by benchmark (ADR 002); "naive" is the unsafe baseline.
     hold_strategy: Literal[
         "naive", "pessimistic", "pessimistic_nowait", "optimistic", "atomic", "serializable"
-    ] = "naive"
+    ] = "pessimistic"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"

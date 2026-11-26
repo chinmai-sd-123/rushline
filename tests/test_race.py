@@ -73,6 +73,7 @@ def once_per_request(barrier: asyncio.Barrier):
 
 @pytest.mark.anyio
 async def test_naive_holds_double_book_under_concurrency(db, auth, monkeypatch):
+    monkeypatch.setenv("RUSHLINE_HOLD_STRATEGY", "naive")
     monkeypatch.setattr(holds, "after_naive_read", asyncio.Barrier(RACERS).wait)
 
     responses = await race(auth, await add_racers())
