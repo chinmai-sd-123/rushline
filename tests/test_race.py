@@ -106,3 +106,26 @@ async def test_safe_strategies_give_the_seats_to_exactly_one_racer(db, auth, mon
     )
     [(active,)] = await query("SELECT count(*) FROM holds WHERE status = 'active'")
     assert owners == active == 1  # losers' holds were rolled back
+
+
+@pytest.mark.anyio
+async def test_one_user_racing_for_different_seats_gets_one_hold(db, auth, monkeypatch):
+    """The partial unique index decides: only one open hold per user per show."""
+    monkeypatch.setenv("RUSHLINE_HOLD_STRATEGY", "atomic")
+    async with app.router.lifespan_context(app):
+        transport = httpx2.ASGITransport(app=app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+            responses = await asyncio.gather(
+                *(
+                    client.post(
+                        "/holds",
+                        json={"show_id": 1, "seat_ids": [seat]},
+                        headers={**auth(1), "Idempotency-Key": uuid.uuid4().hex},
+                    )
+                    for seat in range(1, RACERS + 1)
+                )
+            )
+
+    assert sorted(r.status_code for r in responses) == [201] + [409] * (RACERS - 1)
+    [(active,)] = await query("SELECT count(*) FROM holds WHERE user_id = 1")
+    assert active == 1
