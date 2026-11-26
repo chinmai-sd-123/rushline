@@ -1,4 +1,8 @@
-"""Tests run against a separate `rushline_test` database, rebuilt from migrations each run."""
+"""Tests run against a separate `rushline_test` database, migrated to head before each run.
+
+The database is reused between local runs (CREATE DATABASE is slow on slow disks).
+Set RUSHLINE_TEST_FRESH_DB=1 to rebuild it. CI always starts from an empty server.
+"""
 
 import asyncio
 import os
@@ -29,13 +33,20 @@ TEST_DATABASE_URL = _base_url.set(database=TEST_DB).render_as_string(hide_passwo
 os.environ["RUSHLINE_DATABASE_URL"] = TEST_DATABASE_URL
 
 
-async def _recreate_test_database() -> None:
+async def _prepare_test_database(fresh: bool) -> None:
     admin = create_async_engine(
         _base_url.set(database="postgres"), isolation_level="AUTOCOMMIT", poolclass=NullPool
     )
     async with admin.connect() as conn:
-        await conn.execute(text(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)"))
-        await conn.execute(text(f"CREATE DATABASE {TEST_DB}"))
+        if fresh:
+            await conn.execute(text(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)"))
+        exists = await conn.scalar(
+            text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": TEST_DB}
+        )
+        if not exists:
+            await conn.execute(text(f"CREATE DATABASE {TEST_DB}"))
+            # Test data is throwaway: don't wait for the disk on every commit.
+            await conn.execute(text(f"ALTER DATABASE {TEST_DB} SET synchronous_commit = off"))
     await admin.dispose()
 
 
@@ -48,8 +59,8 @@ async def _load_demo_data() -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def test_database() -> None:
-    """Fresh database per run, so the full migration chain is tested every time."""
-    asyncio.run(_recreate_test_database())
+    """Create the test database if needed, then migrate it to head."""
+    asyncio.run(_prepare_test_database(fresh=os.environ.get("RUSHLINE_TEST_FRESH_DB") == "1"))
     command.upgrade(Config(str(ROOT / "alembic.ini")), "head")
 
 

@@ -24,15 +24,26 @@ ROWS = "ABCDE"
 SEATS_PER_ROW = 10
 PRICE_PAISE_BY_ROW = {"A": 50000, "B": 50000, "C": 35000, "D": 35000, "E": 20000}
 
-TRUNCATE_ALL = text(
-    "TRUNCATE users, venues, shows, seats, holds, bookings, idempotency_keys, outbox "
-    "RESTART IDENTITY CASCADE"
-)
+# Children first, so foreign keys never block a delete.
+TABLES = ["outbox", "idempotency_keys", "bookings", "seats", "holds", "shows", "venues", "users"]
+ID_TABLES = [t for t in TABLES if t != "idempotency_keys"]
+
+
+async def clear_all(conn: AsyncConnection) -> None:
+    """Empty every table and restart ids at 1.
+
+    DELETE, not TRUNCATE: TRUNCATE creates new files per table and index, which is slow
+    on disks with slow flushes. For demo-sized data DELETE is much faster.
+    """
+    for table in TABLES:
+        await conn.execute(text(f"DELETE FROM {table}"))  # fixed names, no user input
+    for table in ID_TABLES:
+        await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN id RESTART"))
 
 
 async def load_demo_data(conn: AsyncConnection) -> None:
     """Replace all data with the demo set. Runs inside the caller's transaction."""
-    await conn.execute(TRUNCATE_ALL)
+    await clear_all(conn)
     await conn.execute(
         text("INSERT INTO users (email, name) VALUES (:email, :name)"),
         [{"email": email, "name": name} for email, name in USERS],
