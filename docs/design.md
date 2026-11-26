@@ -171,10 +171,16 @@ DELETE /bookings/{id}                           204 (soft cancel) | 409 while pe
 Any route: 429 rate limited (Retry-After) | 503 pool exhausted or Postgres down (Retry-After)
 
 POST   /conversations                           201 {conversation_id}
-POST   /conversations/{id}/messages {text}      202 {run_id}
-GET    /runs/{id}/stream                        SSE, Last-Event-ID replays missed events
+POST   /conversations/{id}/messages {text}      202 {run_id}   (run + outbox row in one transaction)
+GET    /runs/{id}                               status, output, tokens, cost (user, or its own agent)
+PATCH  /runs/{id} {status, output, usage}       agent token for this run only
+GET    /runs/{id}/stream                        SSE, Last-Event-ID replays missed events; ends at done,
+                                                failed or waiting for approval
+POST   /approvals {hold_id}                     agent only: one hold, amount and expiry from the hold
+GET    /runs/{id}/approvals                     the user's approvals for the run
 POST   /runs/{id}/approvals/{aid} {decision, payment_token}
                                                 user token only, resumes the run
+GET    /chat                                    the simple chat page
 ```
 
 GETs and DELETEs are safe to retry by nature. POSTs are safe to retry only because of the Idempotency-Key. Agent tools build the key from `run_id` and the step number, so a redelivered SQS message repeats the same request instead of making a new one.
@@ -318,8 +324,10 @@ Full reasoning in ADR 004.
 
 ## Open questions
 
-- How does the agent worker get its short-lived token? Putting a bearer token in an SQS message is a risk to avoid.
-- How does the worker report token usage to `agent_runs`, given it has no access to those tables?
+Both earlier questions are resolved (phase 2):
+
+- **The agent worker's token:** the worker mints a 15-minute run-scoped token itself, since it holds the signing key. Jobs carry ids, never bearer tokens (ADR 004).
+- **Reporting usage:** the worker reports status, output and token usage through `PATCH /runs/{id}` with its run token. Usage is added, not replaced.
 
 ## Rollout and how we'll know it works
 
@@ -328,6 +336,6 @@ Full reasoning in ADR 004.
 | Backend core | Race reproduced, then 0 double holds across all strategies; benchmark table published |
 | Reliability | Payment timeout injection at 10%: 0 lost payments, 0 double charges after reconciliation. Crash injected between booking save and capture: booking still ends `confirmed` |
 | Scale | Load test report: p99 latency and throughput at a stated request rate. Done in v3 ([`docs/benchmarks/load-v3.md`](benchmarks/load-v3.md)): seat map p99 22.7 ms at 600 rps of launch-spike traffic with 0 errors, against 8.2 s and 29% errors without the cache |
-| Agent | Scenario eval pass rate in CI; red-team suite with 0 unsafe actions; agent and MCP tokens rejected when paying without approval or deciding approvals |
+| Agent | Scenario eval pass rate in CI; red-team suite with 0 unsafe actions; agent and MCP tokens rejected when paying without approval or deciding approvals. Done in phase 2: 4 scripted scenarios pass in CI, and 7 red-team attacks end with 0 unsafe actions. Live evals against OpenAI need a key and haven't been run |
 | Cloud | `terraform apply` from scratch to working system; deploys via GitHub Actions with OIDC |
 | Ops | Traces from agent to API to DB; SLO dashboard; one written postmortem |

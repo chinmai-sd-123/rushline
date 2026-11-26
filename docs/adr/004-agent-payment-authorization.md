@@ -1,6 +1,6 @@
 # ADR 004: How the API authorizes agent and MCP payments
 
-Status: Accepted · Date: 2026-11-06
+Status: Accepted · Date: 2026-11-06 · Implemented: 2026-11-26
 
 ## Context
 
@@ -45,4 +45,26 @@ The approval is marked used in the same transaction that moves the hold to `payi
 - More to build and test: the actor claim, approval checks, and a red-team test for each rejection.
 - The approval row briefly stores a payment token, so it must stay out of logs. This is a mock token today, and a real provider would need stronger handling.
 - MCP users have to finish payment in the chat page.
-- Still open: how the worker gets its short-lived token without putting a bearer token in an SQS message.
+- **Resolved: how the worker gets its token.** The agent worker is trusted backend code that holds the signing key. It mints a 15-minute `actor=agent` token for the one run it's working on, so jobs carry only `run_id` and `user_id`, never a bearer token.
+
+## Implementation
+
+- **Tokens:** `src/rushline/auth.py` carries the `actor` claim, and `require_actor(...)` is set on every route.
+- **Approvals:** `src/rushline/runs.py`.
+  - `POST /approvals` is for agents only. It reads the amount and expiry from the hold.
+  - `POST /runs/{id}/approvals/{aid}` is for users only. It stores the payment token and queues `run.resume`.
+  - A partial unique index allows one live approval per hold.
+  - A check constraint keeps the payment token only while the approval is `approved`.
+- **Paying:** `POST /bookings` takes `approval_id` from agents and `payment_token` from users. `use_approval` consumes the approval, returns its token once and clears it, all in the same transaction that flips the hold to `paying`.
+- **The agent cannot pay by construction:** it has no tool that approves anything, and its tools call the API with its own token.
+
+## Verified
+
+- **`tests/test_agent_api.py`:**
+  - no payment without an approval
+  - a pending approval is not enough
+  - an agent can't approve its own payment
+  - an approval is bound to its run
+  - approvals are single use, expire with the hold, and allow one live per hold
+  - MCP tokens can't pay or request approvals
+- **`tests/test_redteam.py`:** a fully compromised model that obeys injected policy text, guesses approval ids, aims at another user's booking, hoards seats, injects arguments and loops ends with 0 payments and 0 changes to other users' data.
