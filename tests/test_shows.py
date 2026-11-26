@@ -1,13 +1,4 @@
 import pytest
-from fastapi.testclient import TestClient
-
-from rushline.main import app
-
-
-@pytest.fixture
-def client(db):
-    with TestClient(app) as c:
-        yield c
 
 
 def test_list_shows_first_page(client):

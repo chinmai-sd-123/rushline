@@ -16,3 +16,6 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=10, gt=0)
     db_max_overflow: int = Field(default=5, ge=0)
     db_pool_timeout_seconds: float = Field(default=5, gt=0)
+    jwt_secret: str = Field(min_length=32)  # HS256 key: at least 256 bits
+    jwt_ttl_seconds: int = Field(default=3600, gt=0)
+    enable_dev_login: bool = False  # only for local demos

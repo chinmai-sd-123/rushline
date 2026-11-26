@@ -7,18 +7,23 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from rushline.auth import create_token
 from rushline.config import Settings
+from rushline.main import app
 from rushline.seed import load_demo_data
 
 TEST_DB = "rushline_test"
 ROOT = Path(__file__).resolve().parents[1]
 
-# Point the app at the test database before any test imports it.
+# Configure the app for tests before any test imports it.
+os.environ.setdefault("RUSHLINE_JWT_SECRET", "test-only-secret-that-is-at-least-32-chars")
+os.environ["RUSHLINE_ENABLE_DEV_LOGIN"] = "true"
 _base_url = make_url(Settings().database_url)
 TEST_DATABASE_URL = _base_url.set(database=TEST_DB).render_as_string(hide_password=False)
 os.environ["RUSHLINE_DATABASE_URL"] = TEST_DATABASE_URL
@@ -57,3 +62,21 @@ def db() -> None:
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture
+def client(db):
+    """App with lifespan running, on freshly seeded data."""
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def auth():
+    """Builds an Authorization header, e.g. auth(2) or auth(1, "agent", run_id=7)."""
+
+    def make(user_id: int = 1, actor: str = "user", run_id: int | None = None, **kw) -> dict:
+        token = create_token(Settings(), user_id, actor=actor, run_id=run_id, **kw)
+        return {"Authorization": f"Bearer {token}"}
+
+    return make
