@@ -1,4 +1,9 @@
-"""The v0 milestone: naive holds double book under concurrency (ADR 002 baseline)."""
+"""The v0 milestone: naive holds double book under concurrency (ADR 002 baseline).
+
+Whether a race happens by itself depends on timing (it did on the dev machine, not on
+CI). The test removes the luck: every racer is paused between its read and its write,
+which is the worst interleaving the naive strategy allows.
+"""
 
 import asyncio
 import os
@@ -9,9 +14,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from rushline import holds
 from rushline.main import app
 
-RACERS = 20  # different users, so the one-open-hold index never decides the race
+RACERS = 10  # below the pool size (15): paused racers each hold a connection
+# Different users, so the one-open-hold index never decides the race.
 SEATS = [1, 2]
 
 
@@ -37,7 +44,9 @@ async def race(auth, user_ids: list[int]) -> list[httpx2.Response]:
 
 
 @pytest.mark.anyio
-async def test_naive_holds_double_book_under_concurrency(db, auth):
+async def test_naive_holds_double_book_under_concurrency(db, auth, monkeypatch):
+    barrier = asyncio.Barrier(RACERS)
+    monkeypatch.setattr(holds, "after_naive_read", barrier.wait)
     users = await query(
         "INSERT INTO users (email, name) "
         "SELECT 'racer' || g || '@example.com', 'Racer ' || g FROM generate_series(1, :n) g "
@@ -48,9 +57,8 @@ async def test_naive_holds_double_book_under_concurrency(db, auth):
     responses = await race(auth, [u.id for u in users])
 
     winners = [r for r in responses if r.status_code == 201]
-    assert {r.status_code for r in responses} <= {201, 409}
-    # The bug: more than one user was told they hold the same seats...
-    assert len(winners) > 1
+    # The bug: every racer saw "available", so every one was told they hold the seats...
+    assert len(winners) == RACERS
     # ...but each seat row can point at only one hold, so the rest hold nothing.
     [(owners,)] = await query(
         "SELECT count(DISTINCT hold_id) FROM seats WHERE id = ANY(:ids)", ids=SEATS

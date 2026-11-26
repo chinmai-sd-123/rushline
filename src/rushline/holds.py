@@ -46,6 +46,10 @@ FREE_SEATS = text("""
 
 ClaimFn = Callable[[AsyncConnection, int, list[int]], Awaitable[bool]]
 
+# Test seam: a race test pauses every racer here, between the read and the write,
+# so the double booking reproduces on any machine instead of depending on timing.
+after_naive_read: Callable[[], Awaitable[object]] | None = None
+
 
 async def claim_naive(conn: AsyncConnection, hold_id: int, seat_ids: list[int]) -> bool:
     """Read-then-write. Under READ COMMITTED, both racers see 'available' and both write."""
@@ -54,6 +58,8 @@ async def claim_naive(conn: AsyncConnection, hold_id: int, seat_ids: list[int]) 
     )
     if any(s != "available" for s in statuses):
         return False
+    if after_naive_read is not None:
+        await after_naive_read()
     await conn.execute(
         text("UPDATE seats SET status = 'held', hold_id = :hold_id WHERE id = ANY(:seat_ids)"),
         {"hold_id": hold_id, "seat_ids": seat_ids},
