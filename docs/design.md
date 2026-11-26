@@ -238,7 +238,9 @@ A naive read-then-write lets two users hold the same seat under READ COMMITTED. 
 
 Reproduced in v0. Measured on the dev machine: 20 different users requesting the same 2 seats at once with the naive strategy got 3 to 11 successful holds per run (median 7, 20 runs), while each seat row can point at only one hold. On CI's faster machine the same race didn't happen by itself, because it depends on timing. So `tests/test_race.py` pauses every racer between its read and its write (the worst interleaving naive allows) and asserts that all 10 racers "win". A correct strategy must survive that same pause.
 
-Benchmark: 500 concurrent clients, each a different user, 50 seats, 2 adjacent seats per request. Different users matter because the one-open-hold index would otherwise reject requests before they compete for seats. Measured: double holds (must be 0), successful holds/s, p50/p99 latency, 409 rate, retries, deadlocks. The winner is recorded in ADR 002.
+Benchmark: 500 concurrent clients, each a different user, 50 seats, 2 adjacent seats per request. Different users matter because the one-open-hold index would otherwise reject requests before they compete for seats. Measured: double holds (must be 0), requests/s, holds/s, p50/p99 latency, 409 rate, retries, deadlocks.
+
+Result (ADR 002, [`docs/benchmarks/holds-v1.md`](benchmarks/holds-v1.md)): naive double-held 200 seats across 5 trials, and every safe strategy held 0. **Pessimistic (ordered `FOR UPDATE`) is the default.** It had the best safe p50 with no retries, and it can't deadlock against other claims because locks are taken in id order. Every strategy retries deadlock victims, and `POST /holds` requires an `Idempotency-Key`.
 
 ### 2. Payment vs hold expiry
 

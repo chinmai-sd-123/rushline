@@ -2,7 +2,7 @@
 
 A seat booking backend built to stay correct under a Tatkal-style rush, plus an AI agent that books seats through the same API. Design: [`docs/design.md`](docs/design.md). Decisions: [`docs/adr/`](docs/adr/).
 
-**Status:** v0 done (foundation and a reproduced double-booking race). Next: v1, safe locking strategies and a benchmark.
+**Status:** v1 done: safe seat holds chosen by benchmark, plus idempotency keys. Next: v2, payments and background work.
 
 ## What's here
 
@@ -11,10 +11,13 @@ A seat booking backend built to stay correct under a Tatkal-style rush, plus an 
 | API | FastAPI: `/health`, `/ready`, shows with cursor pagination, seat map, holds |
 | Auth | JWT with an `actor` claim (`user`, `agent`, `mcp`), local dev login |
 | Data | Postgres 16, hand-written Alembic migrations, constraints that enforce the rules |
-| Correctness | A test that reproduces double booking with the naive strategy |
+| Correctness | Five claim strategies raced in tests, pessimistic locking chosen by benchmark ([ADR 002](docs/adr/002-locking-strategy.md)), idempotency keys |
 | Ops | Request ids, one-line JSON logs, CI with real Postgres and Redis |
 
-**Measured so far:** with the naive strategy, 20 users requesting the same 2 seats at once got 3 to 11 successful holds per run on the dev machine (median 7, 20 runs). Whether it happens by itself depends on timing, so the test forces the worst interleaving and every racer wins. That's the bug v1 fixes and benchmarks.
+**Measured so far:**
+
+- **Naive is unsafe:** 500 users racing for 50 seats, 2 each: the naive strategy promised 200 seats to more than one user across 5 trials. Every safe strategy promised 0. [Full results](docs/benchmarks/holds-v1.md).
+- **Pessimistic locking is the default:** it had the best safe p50 (1386 ms) with no retries. Serializable was slowest (1906 ms, 1,493 retries). This machine's slow disk dominates the absolute numbers, so compare strategies with each other.
 
 ## Run it locally
 
@@ -36,6 +39,7 @@ TOKEN=$(curl -s localhost:8000/auth/dev-token -H 'Content-Type: application/json
   -d '{"email":"asha@example.com"}' | python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
 curl -s localhost:8000/shows
 curl -s -X POST localhost:8000/holds -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" \
   -H 'Content-Type: application/json' -d '{"show_id": 1, "seat_ids": [1, 2]}'
 curl -s localhost:8000/shows/1/seats
 ```
@@ -60,10 +64,12 @@ src/rushline/
   auth.py           JWT, actors, dev login
   shows.py          shows list and seat map
   holds.py          holds and claim strategies
+  idempotency.py    Idempotency-Key handling
   health.py         liveness and readiness
   observability.py  request ids and JSON logs
   seed.py           demo data
 migrations/         hand-written SQL migrations
+bench/              benchmarks (bench/holds.py)
 tests/              pytest suite against real Postgres
 docs/               design doc and ADRs
 ```
