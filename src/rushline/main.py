@@ -1,9 +1,12 @@
 """App wiring: shared clients are created once at startup and closed at shutdown."""
 
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from rushline import auth, bookings, health, holds, shows
 from rushline.config import Settings
@@ -29,7 +32,29 @@ async def lifespan(app: FastAPI):
     await app.state.engine.dispose()
 
 
+log = logging.getLogger("rushline")
+
 app = FastAPI(title="Rushline", lifespan=lifespan)
 app.add_middleware(RequestContextMiddleware)
+
+
+@app.exception_handler(PoolTimeout)
+async def pool_exhausted(request: Request, exc: PoolTimeout) -> JSONResponse:
+    """Every pooled connection is busy: shed load with a retryable 503, not a 500."""
+    log.warning("db pool exhausted", extra={"fields": {"path": request.url.path}})
+    return JSONResponse(
+        {"detail": "server busy, try again"}, status_code=503, headers={"Retry-After": "1"}
+    )
+
+
+@app.exception_handler(ConnectionRefusedError)
+async def database_down(request: Request, exc: ConnectionRefusedError) -> JSONResponse:
+    """Postgres is unreachable (design: Risks). Redis and payment errors are handled elsewhere."""
+    log.error("database unreachable", extra={"fields": {"path": request.url.path}})
+    return JSONResponse(
+        {"detail": "database unavailable"}, status_code=503, headers={"Retry-After": "5"}
+    )
+
+
 for module in (health, auth, shows, holds, bookings):
     app.include_router(module.router)

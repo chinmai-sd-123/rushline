@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 access_log = logging.getLogger("rushline.access")
+error_log = logging.getLogger("rushline.errors")
 
 # Accept a caller's id only if it's short and plain, so logs can't be forged or bloated.
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -79,6 +80,9 @@ class RequestContextMiddleware:
 
         try:
             await self.app(scope, receive, send_with_id)
+        except Exception:
+            error_log.exception("unhandled error")  # with the request id, so it can be traced
+            raise
         finally:
             access_log.info(
                 "request",
