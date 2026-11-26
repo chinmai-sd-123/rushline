@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     holds_per_minute: int = Field(default=20, gt=0)  # per user
     bookings_per_minute: int = Field(default=10, gt=0)
+    seat_map_fresh_seconds: float = Field(default=1.0, ge=0)
+    seat_map_stale_seconds: float = Field(default=10.0, gt=0)
     payment_url: str = "http://localhost:8001"
     payment_timeout_seconds: float = Field(default=2.0, gt=0)
     payment_window_seconds: int = Field(default=120, gt=0)  # paying holds settle after this

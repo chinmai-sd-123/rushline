@@ -1,6 +1,8 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from helpers import query
+
 
 def hold(client, headers, seat_ids, show_id=1, key=None):
     headers = {**headers, "Idempotency-Key": key or uuid.uuid4().hex}
@@ -8,7 +10,9 @@ def hold(client, headers, seat_ids, show_id=1, key=None):
 
 
 def seat_statuses(client, show_id=1):
-    return {s["id"]: s["status"] for s in client.get(f"/shows/{show_id}/seats").json()["seats"]}
+    """Straight from Postgres: the seat map endpoint is cached, the database is the truth."""
+    rows = query("SELECT id, status FROM seats WHERE show_id = :show_id", show_id=show_id)
+    return {r.id: r.status for r in rows}
 
 
 def test_hold_claims_seats_for_ten_minutes(client, auth):

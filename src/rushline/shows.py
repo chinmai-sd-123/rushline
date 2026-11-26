@@ -3,10 +3,11 @@ import json
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from rushline.deps import get_conn
 
@@ -97,10 +98,21 @@ async def list_shows(
     return ShowPage(items=items, next_cursor=next_cursor)
 
 
-@router.get("/shows/{show_id}/seats")
-async def seat_map(show_id: int, conn: Annotated[AsyncConnection, Depends(get_conn)]) -> SeatMap:
-    rows = (await conn.execute(SEAT_MAP, {"show_id": show_id})).mappings().all()
-    # Every show has seats, so only check existence when nothing came back.
-    if not rows and (await conn.execute(SHOW_EXISTS, {"show_id": show_id})).first() is None:
-        raise HTTPException(status_code=404, detail="show not found")
-    return SeatMap(show_id=show_id, seats=[SeatOut(**row) for row in rows])
+async def load_seat_map(engine: AsyncEngine, show_id: int) -> dict:
+    """Read the seat map from Postgres with its own connection (it may run in the background)."""
+    async with engine.connect() as conn:
+        rows = (await conn.execute(SEAT_MAP, {"show_id": show_id})).mappings().all()
+        # Every show has seats, so only check existence when nothing came back.
+        if not rows and (await conn.execute(SHOW_EXISTS, {"show_id": show_id})).first() is None:
+            raise HTTPException(status_code=404, detail="show not found")
+    return SeatMap(show_id=show_id, seats=[SeatOut(**row) for row in rows]).model_dump()
+
+
+@router.get("/shows/{show_id}/seats", response_model=SeatMap)
+async def seat_map(show_id: int, request: Request) -> JSONResponse:
+    """Cached for about a second (cache.py). Hits never touch Postgres or the pool."""
+    engine = request.app.state.engine
+    data, cache_status = await request.app.state.seat_maps.get(
+        show_id, lambda: load_seat_map(engine, show_id)
+    )
+    return JSONResponse(data, headers={"X-Cache": cache_status})

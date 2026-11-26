@@ -5,10 +5,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from redis.asyncio import Redis
+from redis.asyncio import BlockingConnectionPool, Redis
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from rushline import auth, bookings, health, holds, shows
+from rushline.cache import SeatMapCache
 from rushline.config import Settings
 from rushline.db import create_engine
 from rushline.observability import RequestContextMiddleware, configure_logging
@@ -21,12 +22,23 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
     app.state.settings = settings
     app.state.engine = create_engine(settings)  # lazy: nothing connects until first use
-    # Short timeouts: a hung Redis must not hang requests (rate limits fail open).
-    app.state.redis = Redis.from_url(
-        settings.redis_url, socket_timeout=0.5, socket_connect_timeout=0.5
+    # Bounded pool and short timeouts: a burst waits briefly for a connection instead of
+    # opening hundreds, and a hung Redis can't hang requests (cache and limits fall back).
+    app.state.redis = Redis(
+        connection_pool=BlockingConnectionPool.from_url(
+            settings.redis_url,
+            max_connections=50,
+            timeout=0.5,
+            socket_timeout=0.5,
+            socket_connect_timeout=0.5,
+        )
+    )
+    app.state.seat_maps = SeatMapCache(
+        app.state.redis, settings.seat_map_fresh_seconds, settings.seat_map_stale_seconds
     )
     app.state.payments = PaymentClient(settings.payment_url, settings.payment_timeout_seconds)
     yield
+    await app.state.seat_maps.aclose()
     await app.state.payments.aclose()
     await app.state.redis.aclose()
     await app.state.engine.dispose()
