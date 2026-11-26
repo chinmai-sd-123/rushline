@@ -2,7 +2,7 @@
 
 A seat booking backend built to stay correct under a Tatkal-style rush, plus an AI agent that books seats through the same API. Design: [`docs/design.md`](docs/design.md). Decisions: [`docs/adr/`](docs/adr/).
 
-**Status:** v2 done: payments with authorize-then-capture, a background worker, rate limits and an outbox. Next: v3, seat map caching and a load test.
+**Status:** phase 1 (backend core) done: v0 to v3. Next: phase 2, the AI agent.
 
 ## What's here
 
@@ -14,12 +14,14 @@ A seat booking backend built to stay correct under a Tatkal-style rush, plus an 
 | Correctness | Five claim strategies raced in tests, pessimistic locking chosen by benchmark ([ADR 002](docs/adr/002-locking-strategy.md)), idempotency keys |
 | Payments | Authorize then capture with a mock provider and injected faults, reconciliation and capture retries ([ADR 003](docs/adr/003-authorize-then-capture.md)) |
 | Worker | Hold expiry, payment reconciliation, capture retries, outbox to a Redis stream, `SKIP LOCKED`, graceful shutdown |
+| Speed | Seat map cache in Redis with stampede protection, indexes checked against query plans ([plans](docs/query-plans.md)), HTTP load test |
 | Ops | Request ids, one-line JSON logs, CI with real Postgres and Redis |
 
 **Measured so far:**
 
 - **Naive is unsafe:** 500 users racing for 50 seats, 2 each: the naive strategy promised 200 seats to more than one user across 5 trials. Every safe strategy promised 0. [Full results](docs/benchmarks/holds-v1.md).
 - **Pessimistic locking is the default:** it had the best safe p50 (1386 ms) with no retries. Serializable was slowest (1906 ms, 1,493 retries). This machine's slow disk dominates the absolute numbers, so compare strategies with each other.
+- **The cache holds a launch spike:** at 600 rps of spike traffic the seat map stayed at p99 22.7 ms with 0 errors. Without the cache, the same load gave p99 8.2 s and 29% errors. A cold-cache stampede of 200 requests costs 1 database read. [Load test](docs/benchmarks/load-v3.md).
 - **No money is lost:** with 10% and 30% of all payment provider calls timing out, there were 0 lost payments, 0 double charges and 0 stuck holds after the worker settled. [Details](docs/benchmarks/payments-v2.md).
 
 ## Run it locally
@@ -81,11 +83,12 @@ src/rushline/
   worker.py         background jobs
   outbox.py         outbox writes and publisher
   ratelimit.py      per-user limits in Redis
+  cache.py          seat map cache with stampede protection
   health.py         liveness and readiness
   observability.py  request ids and JSON logs
   seed.py           demo data
 migrations/         hand-written SQL migrations
-bench/              benchmarks: holds.py (locking), payments.py (reliability)
+bench/              holds.py (locking), payments.py (reliability), plans.py (query plans), load.py (HTTP load)
 tests/              pytest suite against real Postgres
 docs/               design doc and ADRs
 ```

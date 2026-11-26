@@ -148,7 +148,7 @@ GET    /health                                  liveness, no dependencies
 GET    /ready                                   503 if Postgres is down, 200 "degraded" if only Redis is
 
 GET    /shows?cursor=&limit=                    cursor pagination on (starts_at, id), limit 1 to 100
-GET    /shows/{id}/seats                        cached ~1 s | 404 unknown show
+GET    /shows/{id}/seats                        cached ~1 s, X-Cache: hit|stale|miss|bypass | 404 unknown show
 GET    /policies/search?venue_id=&q=            chunks with citations
 
 POST   /holds      {show_id, seat_ids}          Idempotency-Key required
@@ -327,7 +327,7 @@ Full reasoning in ADR 004.
 |---|---|
 | Backend core | Race reproduced, then 0 double holds across all strategies; benchmark table published |
 | Reliability | Payment timeout injection at 10%: 0 lost payments, 0 double charges after reconciliation. Crash injected between booking save and capture: booking still ends `confirmed` |
-| Scale | Load test report: p99 latency and throughput at a stated request rate |
+| Scale | Load test report: p99 latency and throughput at a stated request rate. Done in v3 ([`docs/benchmarks/load-v3.md`](benchmarks/load-v3.md)): seat map p99 22.7 ms at 600 rps of launch-spike traffic with 0 errors, against 8.2 s and 29% errors without the cache |
 | Agent | Scenario eval pass rate in CI; red-team suite with 0 unsafe actions; agent and MCP tokens rejected when paying without approval or deciding approvals |
 | Cloud | `terraform apply` from scratch to working system; deploys via GitHub Actions with OIDC |
 | Ops | Traces from agent to API to DB; SLO dashboard; one written postmortem |
