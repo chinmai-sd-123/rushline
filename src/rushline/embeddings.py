@@ -12,6 +12,19 @@ from typing import Protocol
 
 DIMENSIONS = 256  # matches policy_chunks.embedding vector(256)
 _WORD = re.compile(r"[a-z0-9]+")
+# Words that carry no meaning in a question ("can I bring my ..."). Without IDF weighting,
+# they would otherwise outweigh the one word that matters.
+_STOPWORDS = frozenset(
+    "a an and are at be can do does for from how i if in is it me my of on or our "
+    "the there this to we what when where which who will with you your".split()
+)
+
+
+def _normalize(word: str) -> str:
+    """Fold simple plurals, so "backpack" and "backpacks" hash to the same feature."""
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
 
 
 class Embedder(Protocol):
@@ -28,7 +41,7 @@ class HashEmbedder:
 
     @staticmethod
     def _one(text: str) -> list[float]:
-        words = _WORD.findall(text.lower())
+        words = [_normalize(w) for w in _WORD.findall(text.lower()) if w not in _STOPWORDS]
         vector = [0.0] * DIMENSIONS
         for feature in [*words, *(f"{a} {b}" for a, b in zip(words, words[1:], strict=False))]:
             digest = hashlib.blake2b(feature.encode(), digest_size=8).digest()

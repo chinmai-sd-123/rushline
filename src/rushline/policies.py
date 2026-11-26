@@ -36,7 +36,9 @@ SEARCH = text(f"""
         LIMIT {CANDIDATES}
     ),
     fts AS (
-        SELECT id, row_number() OVER (ORDER BY ts_rank_cd(tsv, query) DESC) AS rank
+        -- rank(), not row_number(): equal text scores share a rank instead of an
+        -- arbitrary order, so the vector side decides between them.
+        SELECT id, rank() OVER (ORDER BY ts_rank_cd(tsv, query) DESC) AS rank
         -- OR the words: questions rarely share every word with the answer; ranking sorts it out.
         FROM policy_chunks,
              to_tsquery('english', replace(plainto_tsquery('english', :q)::text, '&', '|'))
@@ -52,7 +54,7 @@ SEARCH = text(f"""
     LEFT JOIN vec ON vec.id = c.id
     LEFT JOIN fts ON fts.id = c.id
     WHERE vec.id IS NOT NULL OR fts.id IS NOT NULL
-    ORDER BY score DESC
+    ORDER BY score DESC, vec.rank NULLS LAST  -- on a tie, trust meaning over shared words
     LIMIT :k
 """)
 UPSERT = text("""
