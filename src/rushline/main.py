@@ -8,10 +8,11 @@ from fastapi.responses import JSONResponse
 from redis.asyncio import BlockingConnectionPool, Redis
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 
-from rushline import auth, bookings, health, holds, runs, shows
+from rushline import auth, bookings, health, holds, policies, runs, shows
 from rushline.cache import SeatMapCache
 from rushline.config import Settings
 from rushline.db import create_engine
+from rushline.embeddings import make_embedder
 from rushline.observability import RequestContextMiddleware, configure_logging
 from rushline.payments import PaymentClient
 
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI):
         app.state.redis, settings.seat_map_fresh_seconds, settings.seat_map_stale_seconds
     )
     app.state.payments = PaymentClient(settings.payment_url, settings.payment_timeout_seconds)
+    app.state.embedder = make_embedder(settings)
     yield
     await app.state.seat_maps.aclose()
     await app.state.payments.aclose()
@@ -73,5 +75,5 @@ async def database_down(request: Request, exc: OSError) -> JSONResponse:
     )
 
 
-for module in (health, auth, shows, holds, bookings, runs):
+for module in (health, auth, shows, holds, bookings, runs, policies):
     app.include_router(module.router)

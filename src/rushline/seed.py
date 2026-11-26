@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
@@ -10,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from rushline.config import Settings
 from rushline.db import create_engine
+from rushline.embeddings import make_embedder
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1"}
+POLICY_DIR = Path(__file__).resolve().parents[2] / "data" / "policies"
 IST = ZoneInfo("Asia/Kolkata")
 
 USERS = [
@@ -104,12 +107,18 @@ async def seed() -> None:
     if host not in LOCAL_HOSTS:  # never wipe a remote database
         raise SystemExit(f"Refusing to seed a non-local database (host: {host})")
 
+    from rushline.policies import ingest  # policies imports the API layer; keep seed light
+
     engine = create_engine(settings)
     async with engine.begin() as conn:  # one transaction: fully seeded or unchanged
         await load_demo_data(conn)
+        sections = await ingest(conn, make_embedder(settings), POLICY_DIR)
     await engine.dispose()
     seats = len(SHOW_TITLES) * len(ROWS) * SEATS_PER_ROW
-    print(f"Seeded {len(USERS)} users, 1 venue, {len(SHOW_TITLES)} shows, {seats} seats")
+    print(
+        f"Seeded {len(USERS)} users, 1 venue, {len(SHOW_TITLES)} shows, {seats} seats, "
+        f"{sections} policy sections"
+    )
 
 
 if __name__ == "__main__":
