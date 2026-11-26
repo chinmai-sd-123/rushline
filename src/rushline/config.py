@@ -49,3 +49,4 @@ class Settings(BaseSettings):
     agent_job_visibility_seconds: int = Field(default=300, gt=0)  # redeliver after this
     embedding_model: str = "text-embedding-3-small"
     api_url: str = "http://localhost:8000"  # the agent and MCP server call the REST API
+    mcp_token: SecretStr | None = None  # per-user token for the MCP server

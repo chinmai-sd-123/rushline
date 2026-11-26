@@ -130,3 +130,30 @@ async def dev_token(
 @router.get("/me")
 async def me(principal: Annotated[Principal, Depends(current_principal)]) -> Me:
     return Me(user_id=principal.user_id, actor=principal.actor, run_id=principal.run_id)
+
+
+MCP_TOKEN_TTL_SECONDS = 30 * 24 * 3600
+
+
+async def _mint_mcp_token(email: str) -> str:
+    from rushline.db import create_engine
+
+    settings = Settings()
+    engine = create_engine(settings)
+    async with engine.connect() as conn:
+        user_id = await conn.scalar(
+            text("SELECT id FROM users WHERE email = :email"), {"email": email}
+        )
+    await engine.dispose()
+    if user_id is None:
+        raise SystemExit(f"no user {email}")
+    return create_token(settings, user_id, "mcp", ttl_seconds=MCP_TOKEN_TTL_SECONDS)
+
+
+if __name__ == "__main__":
+    import asyncio
+    import sys
+
+    if len(sys.argv) != 3 or sys.argv[1] != "mcp-token":
+        raise SystemExit("usage: python -m rushline.auth mcp-token <email>")
+    print(asyncio.run(_mint_mcp_token(sys.argv[2])))
