@@ -90,3 +90,29 @@ def test_cannot_release_someone_elses_hold(client, auth):
 
     assert client.delete(f"/holds/{hold_id}", headers=auth(2)).status_code == 404
     assert seat_statuses(client)[1] == "held"
+
+
+def test_deadlock_victim_is_retried(client, auth, monkeypatch):
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import DBAPIError
+
+    from rushline import holds
+
+    real_claim = holds.STRATEGIES["pessimistic"].claim  # the default
+    calls = []
+
+    async def deadlock_once(conn, hold_id, seat_ids):
+        calls.append(hold_id)
+        if len(calls) == 1:
+            raise DBAPIError("UPDATE seats ...", {}, SimpleNamespace(sqlstate="40P01"))
+        return await real_claim(conn, hold_id, seat_ids)
+
+    monkeypatch.setitem(holds.STRATEGIES, "pessimistic", holds.Strategy(deadlock_once))
+    holds.stats.clear()
+
+    response = hold(client, auth(), [1, 2])
+
+    assert response.status_code == 201
+    assert holds.stats["deadlock_retries"] == 1
+    assert seat_statuses(client)[1] == "held"

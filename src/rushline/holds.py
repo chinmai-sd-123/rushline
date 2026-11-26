@@ -27,7 +27,9 @@ any_actor = require_actor("user", "agent", "mcp")  # holds are cheap and expire
 ONE_OPEN_HOLD = "holds_one_open_per_user_show"
 LOCK_NOT_AVAILABLE = "55P03"
 SERIALIZATION_FAILURE = "40001"
-MAX_ATTEMPTS = 3  # optimistic re-reads and serializable transaction retries
+DEADLOCK_DETECTED = "40P01"
+RETRYABLE = {SERIALIZATION_FAILURE: "serialization_retries", DEADLOCK_DETECTED: "deadlock_retries"}
+MAX_ATTEMPTS = 3  # optimistic re-reads, and whole-transaction retries
 
 stats: Counter[str] = Counter()  # retries, read by the benchmark
 
@@ -251,8 +253,7 @@ async def create_hold(
     if len(body.seat_ids) > settings.max_seats_per_hold:
         raise HTTPException(422, f"at most {settings.max_seats_per_hold} seats per hold")
     strategy = STRATEGIES[settings.hold_strategy]
-    attempts = MAX_ATTEMPTS if strategy.serializable else 1
-    for attempt in range(attempts):
+    for attempt in range(MAX_ATTEMPTS):
         try:
             return await _hold_once(conn, settings, strategy, user_id, body, finalize)
         except IntegrityError as exc:
@@ -260,11 +261,13 @@ async def create_hold(
                 raise HTTPException(409, "you already have an open hold for this show") from exc
             raise
         except DBAPIError as exc:
-            if exc.orig.sqlstate != SERIALIZATION_FAILURE:
+            # Postgres rolled the whole transaction back, so running it again is safe.
+            counter = RETRYABLE.get(getattr(exc.orig, "sqlstate", None))
+            if counter is None:
                 raise
-            if attempt == attempts - 1:
+            if attempt == MAX_ATTEMPTS - 1:
                 raise HTTPException(409, "too much contention, try again") from exc
-            stats["serializable_retries"] += 1
+            stats[counter] += 1
     raise AssertionError("unreachable")
 
 
