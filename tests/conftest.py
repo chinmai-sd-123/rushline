@@ -26,6 +26,8 @@ from rushline.config import Settings
 from rushline.main import app
 from rushline.seed import load_demo_data
 
+pytest_plugins = ["agent_helpers"]  # shared fixtures for agent tests (env)
+
 TEST_DB = "rushline_test"
 ROOT = Path(__file__).resolve().parents[1]
 
