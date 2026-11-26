@@ -25,7 +25,20 @@ SEATS_PER_ROW = 10
 PRICE_PAISE_BY_ROW = {"A": 50000, "B": 50000, "C": 35000, "D": 35000, "E": 20000}
 
 # Children first, so foreign keys never block a delete.
-TABLES = ["outbox", "idempotency_keys", "bookings", "seats", "holds", "shows", "venues", "users"]
+TABLES = [
+    "outbox",
+    "idempotency_keys",
+    "approvals",
+    "bookings",
+    "seats",
+    "holds",
+    "agent_runs",
+    "conversations",
+    "policy_chunks",
+    "shows",
+    "venues",
+    "users",
+]
 ID_TABLES = [t for t in TABLES if t != "idempotency_keys"]
 
 
