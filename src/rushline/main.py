@@ -47,9 +47,14 @@ async def pool_exhausted(request: Request, exc: PoolTimeout) -> JSONResponse:
     )
 
 
-@app.exception_handler(ConnectionRefusedError)
-async def database_down(request: Request, exc: ConnectionRefusedError) -> JSONResponse:
-    """Postgres is unreachable (design: Risks). Redis and payment errors are handled elsewhere."""
+@app.exception_handler(OSError)
+async def database_down(request: Request, exc: OSError) -> JSONResponse:
+    """Postgres is unreachable (design: Risks).
+
+    OSError, not just ConnectionRefusedError: when localhost resolves to both IPv4 and
+    IPv6, asyncio raises a plain OSError wrapping both refusals. Redis and payment
+    network errors are caught where they happen, so only database errors get here.
+    """
     log.error("database unreachable", extra={"fields": {"path": request.url.path}})
     return JSONResponse(
         {"detail": "database unavailable"}, status_code=503, headers={"Retry-After": "5"}
