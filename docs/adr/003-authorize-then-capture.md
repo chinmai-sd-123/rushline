@@ -1,6 +1,6 @@
 # ADR 003: Authorize then capture, with reconciliation
 
-Status: Accepted · Date: 2026-11-04 · Amended: 2026-11-06 (added `pending_capture` and capture retries)
+Status: Accepted · Date: 2026-11-04 · Amended: 2026-11-06 (added `pending_capture` and capture retries) · Implemented: 2026-11-26
 
 ## Context
 
@@ -32,6 +32,27 @@ Zero rows returns 410 and nothing is charged. The expiry worker ignores `paying`
 Why this was added: in the original order, a crash after step 2 left a `converted` hold with no capture. Reconciliation only looks at `paying` holds, so it would never find it, and the user would keep the seat without paying.
 
 Why not capture before saving: if the save then failed, money would have moved for a seat the user didn't get, which needs a refund. Refunds are a non-goal, and a stuck `pending_capture` row is safer and easier to recover.
+
+## Implementation (v2)
+
+- **API:** `POST /bookings` in `src/rushline/bookings.py`. The provider key is `hold-{hold_id}`, so a retry or the reconciler always finds the same payment.
+- **Unknown authorize:** a timeout or 5xx answers **202** `processing` and leaves the hold `paying`. The client checks `GET /holds/{id}` or `GET /bookings`.
+- **Decline:** answers **402** and releases the hold immediately.
+- **Worker:** `src/rushline/worker.py` (`uv run python -m rushline.worker`) handles reconciliation and capture retries, claiming rows with `FOR UPDATE SKIP LOCKED`. A lookup that times out is retried on the next tick, and the hold stays `paying` until the provider answers. Capture gives up after `RUSHLINE_CAPTURE_MAX_ATTEMPTS` unknowns, or immediately on a definite rejection such as an expired authorization.
+- **Every state change** writes an outbox event in the same transaction.
+
+## Verified
+
+- **Tests** (`tests/test_bookings.py`, `tests/test_worker.py`):
+  - decline
+  - expired hold
+  - authorize timeout after the work, which the worker books
+  - authorize timeout before the work, which the worker releases with nothing charged
+  - a crash between saving and capturing, which ends `confirmed`
+  - an expired authorization, which ends `capture_failed`
+  - capture retries exhausted
+  - an unreachable provider during reconciliation
+- **Reliability check** (`bench/payments.py`, [results](../benchmarks/payments-v2.md)): with 10% and 30% of all provider calls timing out, there were 0 lost payments, 0 free seats, 0 double charges and 0 holds left `paying`.
 
 ## Consequences
 

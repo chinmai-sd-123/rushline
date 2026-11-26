@@ -157,11 +157,18 @@ POST   /holds      {show_id, seat_ids}          Idempotency-Key required
        422 too many, duplicate or unknown seats | 429 limit
 DELETE /holds/{id}                              204 | 404 not yours or unknown | 409 not active
 
+GET    /holds/{id}                              status and seats, e.g. after a 202 booking
+
 POST   /bookings   user:  {hold_id, payment_token}
                    agent: {hold_id, approval_id}   Idempotency-Key required
-       201 {booking_id, status} | 410 hold expired | 402 payment failed
-       403 agent without a valid approval, or mcp token
+       201 {booking_id, hold_id, amount_paise, status: confirmed | pending_capture}
+       202 {booking_id: null, status: processing}  authorize outcome unknown, worker settles it
+       410 hold expired | 402 payment declined | 409 hold not active
+       403 agent without a valid approval, or mcp token (agents: phase 2)
+GET    /bookings                                the caller's bookings
 DELETE /bookings/{id}                           204 (soft cancel) | 409 while pending_capture
+
+Any route: 429 rate limited (Retry-After) | 503 pool exhausted or Postgres down (Retry-After)
 
 POST   /conversations                           201 {conversation_id}
 POST   /conversations/{id}/messages {text}      202 {run_id}
@@ -255,6 +262,8 @@ Recovery for the cases prevention can't cover (provider timeouts leave the resul
 5. If authorize timed out, the reconciliation worker looks the payment up by key and either completes the booking or voids it. Holds in `paying` past their deadline are always resolved this way.
 6. If capture didn't finish, the worker retries it with the same key for any booking stuck in `pending_capture`. If retries run out, the booking becomes `capture_failed` and raises an alert.
 
+Measured in v2 ([`docs/benchmarks/payments-v2.md`](benchmarks/payments-v2.md)): with 10% and 30% of every provider call timing out, nothing was lost, nothing was charged twice and no hold was left `paying`.
+
 ### 3. Agent safety
 
 Full reasoning in ADR 004.
@@ -298,7 +307,8 @@ Full reasoning in ADR 004.
 
 | Failure | What happens |
 |---|---|
-| Postgres down | Holds and bookings fail with 503. Seat maps serve stale cache briefly. No data loss (RDS backups). |
+| Postgres down | Holds and bookings fail with 503 and `Retry-After`. Seat maps serve stale cache briefly. No data loss (RDS backups). |
+| Pool exhausted under a spike | Requests that wait longer than the pool timeout get 503 with `Retry-After: 1`, not 500. Found by the payment reliability check. |
 | Redis down | Seat maps fall back to Postgres (slower). Rate limits fail open with a stricter per-instance limit. Live agent events stop until it returns. |
 | Payment provider slow | Timeouts bound the wait. Holds stay `paying` and reconciliation resolves them. |
 | Crash before capture | Booking stays `pending_capture` and the worker retries. If the authorization has expired, it becomes `capture_failed` and raises an alert. |
